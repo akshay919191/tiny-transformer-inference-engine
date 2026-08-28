@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-
+import torch
 
 ## initially tiny
 @dataclass
@@ -13,3 +13,5 @@ class ModelConfig:
     casual = False
     dropout = 0.0
     bias = False
+    batch = 2
+    dtype = torch.float32

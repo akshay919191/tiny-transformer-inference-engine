@@ -1,13 +1,17 @@
-import torch , time
+import torch
+import time
 import torch.nn as nn
 
-from attention import MHA , MHA_CACHED
+from attention import MHA, MHA_CACHED
 from embedding import TokenEmbedding
 from mlp import SwiGLU
 from model_config import ModelConfig
 from rmsnorm import RMSNorm
+from kv_cache import KVCache
+
 
 class TransformerBlock_Nocache(nn.Module):
+
     def __init__(self, config):
         super().__init__()
 
@@ -52,8 +56,10 @@ class TransformerBlock_Nocache(nn.Module):
         x = x + residual
 
         return x
-    
+
+
 class Transformer_nocache(nn.Module):
+
     def __init__(self, config):
         super().__init__()
 
@@ -79,11 +85,9 @@ class Transformer_nocache(nn.Module):
 
         x = self.embedding(input_ids)
 
-        for i, layer in enumerate(self.layers):
+        for layer in self.layers:
 
-            x = layer(
-                x
-            )
+            x = layer(x)
 
         x = self.final_norm(x)
 
@@ -91,9 +95,13 @@ class Transformer_nocache(nn.Module):
 
         return logits
 
+
 class TransformerBlock(nn.Module):
-    def __init__(self, config):
+
+    def __init__(self, config, layer_idx):
         super().__init__()
+
+        self.layer_idx = layer_idx
 
         self.attn_norm = RMSNorm(config.d_model)
 
@@ -112,17 +120,18 @@ class TransformerBlock(nn.Module):
             config.bias,
         )
 
-    def forward(self, x, kv_cache=None):
+    def forward(self, x, kv_cache):
 
         residual = x
 
         x = self.attn_norm(x)
 
-        x, new_kv_cache = self.attn(
+        x = self.attn(
             x,
             x,
             x,
             kv_cache=kv_cache,
+            layer_idx=self.layer_idx,
             causal=True,
         )
 
@@ -136,10 +145,11 @@ class TransformerBlock(nn.Module):
 
         x = x + residual
 
-        return x, new_kv_cache
+        return x
 
 
 class Transformer(nn.Module):
+
     def __init__(self, config):
         super().__init__()
 
@@ -149,8 +159,11 @@ class Transformer(nn.Module):
         )
 
         self.layers = nn.ModuleList([
-            TransformerBlock(config)
-            for _ in range(config.num_layers)
+            TransformerBlock(
+                config,
+                layer_idx=i,
+            )
+            for i in range(config.num_layers)
         ])
 
         self.final_norm = RMSNorm(config.d_model)
@@ -165,25 +178,36 @@ class Transformer(nn.Module):
 
         x = self.embedding(input_ids)
 
-        if kv_cache is None:
-            kv_cache = [None] * len(self.layers)
+        for layer in self.layers:
 
-        new_kv_cache = []
-
-        for i, layer in enumerate(self.layers):
-
-            x, layer_kv_cache = layer(
+            x = layer(
                 x,
-                kv_cache=kv_cache[i],
+                kv_cache=kv_cache,
             )
-
-            new_kv_cache.append(layer_kv_cache)
+        if kv_cache is not None:
+            kv_cache.advance(input_ids.shape[1])
 
         x = self.final_norm(x)
 
         logits = self.lm_head(x)
 
-        return logits, new_kv_cache
+        return logits
+
+
+def make_kv_cache(model, config, batch_size, max_seq_len, device):
+
+    head_dim = config.d_model // config.num_heads
+
+    return KVCache(
+        num_layers=config.num_layers,
+        batch_size=batch_size,
+        num_heads=config.num_heads,
+        max_seq_len=max_seq_len,
+        head_dim=head_dim,
+        dtype=next(model.parameters()).dtype,
+        device=device,
+    )
+
 
 @torch.no_grad()
 def generate_nocache(
@@ -191,6 +215,7 @@ def generate_nocache(
     prompt_tokens,
     max_new_tokens,
 ):
+
     model.eval()
 
     tokens = prompt_tokens
@@ -223,38 +248,58 @@ def generate_nocache(
     torch.cuda.synchronize()
     end = time.perf_counter()
 
-    total_ms = (end - start) * 1000
+    total_ms = (
+        end - start
+    ) * 1000
 
     tokens_per_sec = (
-        max_new_tokens / (total_ms / 1000)
+        max_new_tokens
+        / (total_ms / 1000)
     )
 
     print()
     print("========== NO KV CACHE ==========")
-    print(f"prompt length: {prompt_tokens.shape[1]}")
-    print(f"generate:      {max_new_tokens} tokens")
-    print(f"total:         {total_ms:.3f} ms")
-    print(f"tokens/sec:    {tokens_per_sec:.2f}")
+    print(
+        f"prompt length: {prompt_tokens.shape[1]}"
+    )
+    print(
+        f"generate:      {max_new_tokens} tokens"
+    )
+    print(
+        f"total:         {total_ms:.3f} ms"
+    )
+    print(
+        f"tokens/sec:    {tokens_per_sec:.2f}"
+    )
     print("=================================")
 
     return tokens
+
 
 @torch.no_grad()
 def generate(
     model,
     prompt_tokens,
     max_new_tokens,
+    config,
 ):
+
     model.eval()
 
     tokens = prompt_tokens
 
-    kv_cache = [None] * len(model.layers)
+    kv_cache = make_kv_cache(
+        model,
+        config,
+        batch_size=prompt_tokens.shape[0],
+        max_seq_len=prompt_tokens.shape[1] + max_new_tokens,
+        device=prompt_tokens.device,
+    )
 
     torch.cuda.synchronize()
     start = time.perf_counter()
 
-    logits, kv_cache = model(
+    logits = model(
         tokens,
         kv_cache=kv_cache,
     )
@@ -277,15 +322,18 @@ def generate(
             dim=1,
         )
 
+
         new_token = tokens[:, -1:]
+
+        cache_length = kv_cache.length
 
         print(
             f"step {step} → "
             f"model input T={new_token.shape[1]} | "
-            f"cache T={kv_cache[0][0].shape[2]}"
+            f"cache T={cache_length}"
         )
 
-        logits, kv_cache = model(
+        logits = model(
             new_token,
             kv_cache=kv_cache,
         )
@@ -293,13 +341,17 @@ def generate(
     torch.cuda.synchronize()
     end = time.perf_counter()
 
-    ttft_ms = (ttft_end - start) * 1000
-    total_ms = (end - start) * 1000
 
-    generated_tokens_count = max_new_tokens
+    ttft_ms = (
+        ttft_end - start
+    ) * 1000
+
+    total_ms = (
+        end - start
+    ) * 1000
 
     tokens_per_sec = (
-        generated_tokens_count
+        max_new_tokens
         / (total_ms / 1000)
     )
 
@@ -309,39 +361,69 @@ def generate(
     )
 
     print()
-    print("========== Generation Benchmark ==========")
-    print(f"prompt length: {prompt_tokens.shape[1]}")
-    print(f"generate:      {generated_tokens_count} tokens")
+    print("========== KV CACHE ==========")
+    print(
+        f"prompt length: {prompt_tokens.shape[1]}"
+    )
+    print(
+        f"generate:      {max_new_tokens} tokens"
+    )
     print()
-    print(f"TTFT:          {ttft_ms:.3f} ms")
-    print(f"total:         {total_ms:.3f} ms")
-    print(f"tokens/sec:    {tokens_per_sec:.2f}")
-    print(f"peak memory:   {peak_memory_mb:.2f} MB")
-    print("===========================================")
+    print(
+        f"TTFT:          {ttft_ms:.3f} ms"
+    )
+    print(
+        f"total:         {total_ms:.3f} ms"
+    )
+    print(
+        f"tokens/sec:    {tokens_per_sec:.2f}"
+    )
+    print(
+        f"peak memory:   {peak_memory_mb:.2f} MB"
+    )
+    print("==============================")
 
     return tokens
+
 
 @torch.no_grad()
 def test_first_decode(
     model_nocache,
     model_cache,
     prompt_tokens,
+    config,
 ):
+
     model_nocache.eval()
     model_cache.eval()
 
-
-    logits_nc = model_nocache(prompt_tokens)
-
-    logits_c, cache = model_cache(
-        prompt_tokens,
-        kv_cache=[None] * len(model_cache.layers),
+    logits_nc = model_nocache(
+        prompt_tokens
     )
+
+    cache = make_kv_cache(
+        model_cache,
+        config,
+        batch_size=prompt_tokens.shape[0],
+        max_seq_len=prompt_tokens.shape[1] + 1,
+        device=prompt_tokens.device,
+    )
+
+    logits_c = model_cache(
+        prompt_tokens,
+        kv_cache=cache,
+    )
+
+    prefill_diff = (
+        logits_nc - logits_c
+    ).abs().max()
 
     print(
-        "Prefill diff:",
-        (logits_nc - logits_c).abs().max().item()
+        "Prefill max diff:",
+        prefill_diff.item()
     )
+
+
     next_token = torch.argmax(
         logits_nc[:, -1, :],
         dim=-1,
@@ -349,14 +431,19 @@ def test_first_decode(
     )
 
     tokens = torch.cat(
-        [prompt_tokens, next_token],
+        [
+            prompt_tokens,
+            next_token,
+        ],
         dim=1,
     )
 
-    logits_nc = model_nocache(tokens)
 
+    logits_nc = model_nocache(
+        tokens
+    )
 
-    logits_c, cache = model_cache(
+    logits_c = model_cache(
         next_token,
         kv_cache=cache,
     )
@@ -388,26 +475,39 @@ def test_first_decode(
         )
     )
 
-### main function is LLM generated
+
+# ============================================================
+# LLM GENERATED
+# ============================================================
+
 if __name__ == "__main__":
 
     device = torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu"
+        "cuda"
+        if torch.cuda.is_available()
+        else "cpu"
     )
 
     config = ModelConfig()
 
-    model_cache = Transformer(config).to(device)
 
-    model_nocache = Transformer_nocache(config).to(device)
+    model_cache = Transformer(
+        config
+    ).to(device)
 
-    # Same weights
+    model_nocache = Transformer_nocache(
+        config
+    ).to(device)
+
+    # Same weights.
     model_nocache.load_state_dict(
         model_cache.state_dict()
     )
 
+
     B = 4
     T = 512
+    MAX_NEW_TOKENS = 20
 
     prompt_tokens = torch.randint(
         0,
@@ -415,6 +515,10 @@ if __name__ == "__main__":
         (B, T),
         device=device,
     )
+
+    # Reset CUDA peak-memory measurement.
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
 
 
     print("\n\n")
@@ -425,8 +529,12 @@ if __name__ == "__main__":
     generated_nocache = generate_nocache(
         model_nocache,
         prompt_tokens,
-        max_new_tokens=20,
+        max_new_tokens=MAX_NEW_TOKENS,
     )
+
+
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
 
     print("\n\n")
     print("########################################")
@@ -436,8 +544,10 @@ if __name__ == "__main__":
     generated_cache = generate(
         model_cache,
         prompt_tokens,
-        max_new_tokens=20,
+        max_new_tokens=MAX_NEW_TOKENS,
+        config=config,
     )
+
 
     print()
     print("Prompt shape:")
@@ -457,7 +567,11 @@ if __name__ == "__main__":
     )
 
     print()
-    print("Outputs identical:", same)
+    print(
+        "Outputs identical:",
+        same,
+    )
+
 
     with torch.no_grad():
 
@@ -465,20 +579,33 @@ if __name__ == "__main__":
             prompt_tokens
         )
 
-        logits_cache, cache = model_cache(
+        prefill_cache = make_kv_cache(
+            model_cache,
+            config,
+            batch_size=B,
+            max_seq_len=T + 1,
+            device=device,
+        )
+
+        logits_cache = model_cache(
             prompt_tokens,
-            kv_cache=[None] * len(model_cache.layers),
+            kv_cache=prefill_cache,
         )
 
         diff = (
-            logits_nocache -
+            logits_nocache
+            -
             logits_cache
         ).abs().max()
 
-        print("Prefill max diff:", diff.item())
+        print(
+            "Prefill max diff:",
+            diff.item()
+        )
 
     test_first_decode(
         model_nocache,
         model_cache,
         prompt_tokens,
+        config,
     )

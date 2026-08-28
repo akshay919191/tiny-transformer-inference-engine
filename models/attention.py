@@ -5,7 +5,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from rope import RoPE
+import sys
+from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from kv_cache import KVCache
 
 class MHA(nn.Module):
     def __init__(
@@ -115,14 +123,6 @@ class MHA(nn.Module):
         return out
 
 
-import math
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-from rope import RoPE
-
 
 class MHA_CACHED(nn.Module):
     def __init__(
@@ -168,21 +168,20 @@ class MHA_CACHED(nn.Module):
 
     def forward(
         self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
+        query,
+        key,
+        value,
         kv_cache=None,
-        causal: bool = False,
-        return_attn: bool = False,
+        layer_idx=None,
+        causal=False,
+        return_attn=False,
     ):
 
         B, SQ, D = query.shape
 
-
         q = self.query(query)
         k = self.key(key)
         v = self.value(value)
-
 
         q = q.view(
             B,
@@ -205,39 +204,32 @@ class MHA_CACHED(nn.Module):
             self.headdim,
         ).transpose(1, 2)
 
-        cache_len = 0
+        # Position of the new token(s)
+        position_offset = 0
 
         if kv_cache is not None:
-            cache_len = kv_cache[0].shape[2]
+            position_offset = kv_cache.length
 
         q, k = self.rope(
             q,
             k,
-            position_offset=cache_len,
+            position_offset=position_offset,
         )
 
         if kv_cache is not None:
 
-            k_cache, v_cache = kv_cache
-
-            k = torch.cat(
-                [k_cache, k],
-                dim=2,
+            k, v = kv_cache.update(
+                layer_idx,
+                k,
+                v,
             )
 
-            v = torch.cat(
-                [v_cache, v],
-                dim=2,
-            )
-
-        new_kv_cache = (k, v)
 
         SK = k.shape[2]
 
         scores = (
             q @ k.transpose(-1, -2)
         ) / math.sqrt(self.headdim)
-
 
         if causal:
 
@@ -262,12 +254,10 @@ class MHA_CACHED(nn.Module):
                 float("-inf"),
             )
 
-
         attn = F.softmax(
             scores.float(),
             dim=-1,
         ).to(q.dtype)
-
 
         if self.training and self.dropout > 0:
 
@@ -276,7 +266,6 @@ class MHA_CACHED(nn.Module):
                 p=self.dropout,
                 training=True,
             )
-
 
         out = attn @ v
 
@@ -290,7 +279,6 @@ class MHA_CACHED(nn.Module):
         out = self.out(out)
 
         if return_attn:
+            return out, attn
 
-            return out, attn, new_kv_cache
-
-        return out, new_kv_cache
+        return out
