@@ -2,12 +2,20 @@ import torch
 import time
 import torch.nn as nn
 
-from attention import MHA, MHA_CACHED
+from mqa import MQA , MQA_Cached
 from embedding import TokenEmbedding
 from mlp import SwiGLU
 from model_config import ModelConfig
 from rmsnorm import RMSNorm
-from kv_cache import KVCache
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from kv_cache import KVCache_kv
 
 
 class TransformerBlock_Nocache(nn.Module):
@@ -17,11 +25,8 @@ class TransformerBlock_Nocache(nn.Module):
 
         self.attn_norm = RMSNorm(config.d_model)
 
-        self.attn = MHA(
-            config.num_heads,
-            config.d_model,
-            config.dropout,
-            config.bias,
+        self.attn = MQA(
+            config
         )
 
         self.mlp_norm = RMSNorm(config.d_model)
@@ -105,11 +110,8 @@ class TransformerBlock(nn.Module):
 
         self.attn_norm = RMSNorm(config.d_model)
 
-        self.attn = MHA_CACHED(
-            config.num_heads,
-            config.d_model,
-            config.dropout,
-            config.bias,
+        self.attn = MQA_Cached(
+            config
         )
 
         self.mlp_norm = RMSNorm(config.d_model)
@@ -194,86 +196,33 @@ class Transformer(nn.Module):
         return logits
 
 
-def make_kv_cache(model, config, batch_size, max_seq_len, device):
+# def make_kv_cache(model, config, batch_size, max_seq_len, device):
+
+#     head_dim = config.d_model // config.num_heads
+
+#     return KVCache(
+#         num_layers=config.num_layers,
+#         batch_size=batch_size,
+#         num_heads=config.num_heads,
+#         max_seq_len=max_seq_len,
+#         head_dim=head_dim,
+#         dtype=next(model.parameters()).dtype,
+#         device=device,
+#     )
+
+def make_kv_cache_(model, config, batch_size, max_seq_len, device):
 
     head_dim = config.d_model // config.num_heads
 
-    return KVCache(
+    return KVCache_kv(
         num_layers=config.num_layers,
         batch_size=batch_size,
-        num_heads=config.num_heads,
+        num_heads=config.num_kv_heads,
         max_seq_len=max_seq_len,
         head_dim=head_dim,
         dtype=next(model.parameters()).dtype,
         device=device,
     )
-
-
-@torch.no_grad()
-def generate_nocache(
-    model,
-    prompt_tokens,
-    max_new_tokens,
-):
-
-    model.eval()
-
-    tokens = prompt_tokens
-
-    torch.cuda.synchronize()
-    start = time.perf_counter()
-
-    for step in range(max_new_tokens):
-
-        logits = model(tokens)
-
-        next_token_logits = logits[:, -1, :]
-
-        next_token = torch.argmax(
-            next_token_logits,
-            dim=-1,
-            keepdim=True,
-        )
-
-        tokens = torch.cat(
-            [tokens, next_token],
-            dim=1,
-        )
-
-        print(
-            f"step {step} → "
-            f"model input T={tokens.shape[1]}"
-        )
-
-    torch.cuda.synchronize()
-    end = time.perf_counter()
-
-    total_ms = (
-        end - start
-    ) * 1000
-
-    tokens_per_sec = (
-        max_new_tokens
-        / (total_ms / 1000)
-    )
-
-    print()
-    print("========== NO KV CACHE ==========")
-    print(
-        f"prompt length: {prompt_tokens.shape[1]}"
-    )
-    print(
-        f"generate:      {max_new_tokens} tokens"
-    )
-    print(
-        f"total:         {total_ms:.3f} ms"
-    )
-    print(
-        f"tokens/sec:    {tokens_per_sec:.2f}"
-    )
-    print("=================================")
-
-    return tokens
 
 
 @torch.no_grad()
@@ -288,7 +237,7 @@ def generate(
 
     tokens = prompt_tokens
 
-    kv_cache = make_kv_cache(
+    kv_cache = make_kv_cache_(
         model,
         config,
         batch_size=prompt_tokens.shape[0],
@@ -387,6 +336,74 @@ def generate(
 
 
 @torch.no_grad()
+def generate_nocache(
+    model,
+    prompt_tokens,
+    max_new_tokens,
+):
+
+    model.eval()
+
+    tokens = prompt_tokens
+
+    torch.cuda.synchronize()
+    start = time.perf_counter()
+
+    for step in range(max_new_tokens):
+
+        logits = model(tokens)
+
+        next_token_logits = logits[:, -1, :]
+
+        next_token = torch.argmax(
+            next_token_logits,
+            dim=-1,
+            keepdim=True,
+        )
+
+        tokens = torch.cat(
+            [tokens, next_token],
+            dim=1,
+        )
+
+        print(
+            f"step {step} → "
+            f"model input T={tokens.shape[1]}"
+        )
+
+    torch.cuda.synchronize()
+    end = time.perf_counter()
+
+    total_ms = (
+        end - start
+    ) * 1000
+
+    tokens_per_sec = (
+        max_new_tokens
+        / (total_ms / 1000)
+    )
+
+    print()
+    print("========== NO KV CACHE ==========")
+    print(
+        f"prompt length: {prompt_tokens.shape[1]}"
+    )
+    print(
+        f"generate:      {max_new_tokens} tokens"
+    )
+    print(
+        f"total:         {total_ms:.3f} ms"
+    )
+    print(
+        f"tokens/sec:    {tokens_per_sec:.2f}"
+    )
+    print("=================================")
+
+    return tokens
+
+
+
+@torch.no_grad()
 def test_first_decode(
     model_nocache,
     model_cache,
@@ -401,7 +418,7 @@ def test_first_decode(
         prompt_tokens
     )
 
-    cache = make_kv_cache(
+    cache = make_kv_cache_(
         model_cache,
         config,
         batch_size=prompt_tokens.shape[0],
@@ -479,7 +496,6 @@ def test_first_decode(
 # ============================================================
 # LLM GENERATED
 # ============================================================
-
 if __name__ == "__main__":
 
     device = torch.device(
@@ -579,7 +595,7 @@ if __name__ == "__main__":
             prompt_tokens
         )
 
-        prefill_cache = make_kv_cache(
+        prefill_cache = make_kv_cache_(
             model_cache,
             config,
             batch_size=B,

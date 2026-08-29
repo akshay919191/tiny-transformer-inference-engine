@@ -51,7 +51,7 @@ class RoPE(nn.Module):
         q_rot_odd = q_even * sin + q_odd * cos
 
         k_rot_even = k_even * cos - k_odd * sin
-        k_rot_odd = q_even * sin + q_odd * cos
+        k_rot_odd = k_even * sin + k_odd * cos
 
         q_rot = torch.stack(
             (q_rot_even, q_rot_odd),
