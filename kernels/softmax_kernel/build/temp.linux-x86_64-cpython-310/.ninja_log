@@ -1,0 +1,3 @@
+# ninja log v7
+0	10392	1783701832186779755	/home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/softmax_kernel/build/temp.linux-x86_64-cpython-310/binding.o	78eefc10ef2c6eba
+0	38173	1783701832186779755	/home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/softmax_kernel/build/temp.linux-x86_64-cpython-310/softmax_kernel.o	96c8d16d08124ab8

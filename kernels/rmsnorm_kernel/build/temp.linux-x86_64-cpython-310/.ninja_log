@@ -1,0 +1,3 @@
+# ninja log v7
+0	10710	1783777274579555378	/home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/rmsnorm_kernel/build/temp.linux-x86_64-cpython-310/binding.o	b18434902a6dc298
+0	39148	1783777274579555378	/home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/rmsnorm_kernel/build/temp.linux-x86_64-cpython-310/rmsnorm_kernel.o	37e541394e96e20
