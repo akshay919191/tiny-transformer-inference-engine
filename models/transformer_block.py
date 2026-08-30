@@ -1,6 +1,7 @@
 import torch
 import time
 import torch.nn as nn
+import torch.nn.functional as F
 
 from mqa import MQA , MQA_Cached
 from embedding import TokenEmbedding
@@ -224,6 +225,134 @@ def make_kv_cache_(model, config, batch_size, max_seq_len, device):
         device=device,
     )
 
+def smaple_temperature(
+        logits,
+        temp = 0.4
+):
+    if temp <= 0:
+        raise ValueError("must be > 0")
+
+    logits = logits / temp
+
+    logits = nn.functional.softmax(logits , dim = -1)
+
+    next_token = torch.multinomial(
+        logits , num_samples = 1
+    )
+
+    return next_token
+
+def apply_top_p(logits, top_p):
+
+    if top_p >= 1.0:
+        return logits
+
+    if top_p <= 0.0:
+        raise ValueError("top_p must be > 0")
+
+    sorted_logits, sorted_indices = torch.sort(
+        logits,
+        descending=True,
+        dim=-1,
+    )
+
+    sorted_probs = F.softmax(
+        sorted_logits,
+        dim=-1,
+    )
+
+    cumulative_probs = torch.cumsum(
+        sorted_probs,
+        dim=-1,
+    )
+
+    remove = cumulative_probs > top_p
+
+    remove[:, 1:] = remove[:, :-1].clone()
+
+    remove[:, 0] = False
+
+    sorted_logits = sorted_logits.masked_fill(
+        remove,
+        float("-inf"),
+    )
+
+    logits = torch.full_like(
+        logits,
+        float("-inf"),
+    )
+
+    logits.scatter_(
+        dim=-1,
+        index=sorted_indices,
+        src=sorted_logits,
+    )
+
+    return logits
+
+def apply_top_k(
+        logits ,
+        topk_digit
+):
+    if topk_digit <= 0:
+        return logits
+
+    topk = min(topk_digit , logits.shape[-1])
+
+    final , _ = torch.topk(
+        logits ,
+        topk,
+        dim = -1
+    )
+
+    kth = final[: , -1].unsqueeze(-1)
+
+    logit = logits.masked_fill(
+        logits < kth,
+        float("-inf")
+    )
+
+    return logit
+
+def sample(
+    logits,
+    temperature=1.0,
+    top_k=0,
+    top_p=1.0,
+):
+
+    if temperature <= 0:
+        raise ValueError(
+            "temperature must be > 0"
+        )
+
+
+    logits = logits / temperature
+
+    if top_k > 0:
+        logits = apply_top_k(
+            logits,
+            top_k,
+        )
+
+    if top_p < 1.0:
+        logits = apply_top_p(
+            logits,
+            top_p,
+        )
+
+    probs = F.softmax(
+        logits,
+        dim=-1,
+    )
+
+
+    next_token = torch.multinomial(
+        probs,
+        num_samples=1,
+    )
+
+    return next_token
 
 @torch.no_grad()
 def generate(
@@ -237,15 +366,23 @@ def generate(
 
     tokens = prompt_tokens
 
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
     kv_cache = make_kv_cache_(
         model,
         config,
         batch_size=prompt_tokens.shape[0],
-        max_seq_len=prompt_tokens.shape[1] + max_new_tokens,
+        max_seq_len=(
+            prompt_tokens.shape[1]
+            + max_new_tokens
+        ),
         device=prompt_tokens.device,
     )
 
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
     start = time.perf_counter()
 
     logits = model(
@@ -253,17 +390,20 @@ def generate(
         kv_cache=kv_cache,
     )
 
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
     ttft_end = time.perf_counter()
 
     for step in range(max_new_tokens):
 
         next_token_logits = logits[:, -1, :]
 
-        next_token = torch.argmax(
+        next_token = sample(
             next_token_logits,
-            dim=-1,
-            keepdim=True,
+            temperature=0.8,
+            top_k=50,
+            top_p=0.9,
         )
 
         tokens = torch.cat(
@@ -271,25 +411,16 @@ def generate(
             dim=1,
         )
 
-
         new_token = tokens[:, -1:]
-
-        cache_length = kv_cache.length
-
-        print(
-            f"step {step} → "
-            f"model input T={new_token.shape[1]} | "
-            f"cache T={cache_length}"
-        )
-
         logits = model(
             new_token,
             kv_cache=kv_cache,
         )
 
-    torch.cuda.synchronize()
-    end = time.perf_counter()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
 
+    end = time.perf_counter()
 
     ttft_ms = (
         ttft_end - start
@@ -299,41 +430,58 @@ def generate(
         end - start
     ) * 1000
 
+    decode_ms = (
+        total_ms - ttft_ms
+    )
+
     tokens_per_sec = (
         max_new_tokens
         / (total_ms / 1000)
     )
 
-    peak_memory_mb = (
-        torch.cuda.max_memory_allocated()
-        / (1024 ** 2)
-    )
+    if torch.cuda.is_available():
+        peak_memory_mb = (
+            torch.cuda.max_memory_allocated()
+            / (1024 ** 2)
+        )
+    else:
+        peak_memory_mb = 0.0
 
-    print()
-    print("========== KV CACHE ==========")
+    print("KV CACHE")
+
     print(
         f"prompt length: {prompt_tokens.shape[1]}"
     )
+
     print(
         f"generate:      {max_new_tokens} tokens"
     )
-    print()
+
     print(
         f"TTFT:          {ttft_ms:.3f} ms"
     )
+
+    print(
+        f"decode time:   {decode_ms:.3f} ms"
+    )
+
     print(
         f"total:         {total_ms:.3f} ms"
     )
+
     print(
         f"tokens/sec:    {tokens_per_sec:.2f}"
     )
+
     print(
         f"peak memory:   {peak_memory_mb:.2f} MB"
     )
-    print("==============================")
+
+    print(
+        f"final length:  {tokens.shape[1]}"
+    )
 
     return tokens
-
 
 @torch.no_grad()
 def generate_nocache(
@@ -346,7 +494,12 @@ def generate_nocache(
 
     tokens = prompt_tokens
 
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
     start = time.perf_counter()
 
     for step in range(max_new_tokens):
@@ -355,10 +508,11 @@ def generate_nocache(
 
         next_token_logits = logits[:, -1, :]
 
-        next_token = torch.argmax(
+        next_token = sample(
             next_token_logits,
-            dim=-1,
-            keepdim=True,
+            temperature=0.8,
+            top_k=50,
+            top_p=0.9,
         )
 
         tokens = torch.cat(
@@ -366,12 +520,9 @@ def generate_nocache(
             dim=1,
         )
 
-        print(
-            f"step {step} → "
-            f"model input T={tokens.shape[1]}"
-        )
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
 
-    torch.cuda.synchronize()
     end = time.perf_counter()
 
     total_ms = (
@@ -383,8 +534,16 @@ def generate_nocache(
         / (total_ms / 1000)
     )
 
-    print()
-    print("========== NO KV CACHE ==========")
+    if torch.cuda.is_available():
+        peak_memory_mb = (
+            torch.cuda.max_memory_allocated()
+            / (1024 ** 2)
+        )
+    else:
+        peak_memory_mb = 0.0
+
+    print("NO KV CACHE")
+
     print(
         f"prompt length: {prompt_tokens.shape[1]}"
     )
@@ -397,10 +556,19 @@ def generate_nocache(
     print(
         f"tokens/sec:    {tokens_per_sec:.2f}"
     )
-    print("=================================")
+    print(
+        f"peak memory:   {peak_memory_mb:.2f} MB"
+    )
+    print(
+        f"final length:  {tokens.shape[1]}"
+    )
+
 
     return tokens
 
+# ============================================================
+# LLM GENERATED
+# ============================================================
 
 
 @torch.no_grad()
@@ -493,9 +661,6 @@ def test_first_decode(
     )
 
 
-# ============================================================
-# LLM GENERATED
-# ============================================================
 if __name__ == "__main__":
 
     device = torch.device(
@@ -521,7 +686,7 @@ if __name__ == "__main__":
     )
 
 
-    B = 4
+    B = 8
     T = 512
     MAX_NEW_TOKENS = 20
 
