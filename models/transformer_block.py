@@ -3,11 +3,11 @@ import time
 import torch.nn as nn
 import torch.nn.functional as F
 
-from mqa import MQA , MQA_Cached
-from embedding import TokenEmbedding
-from mlp import SwiGLU
-from model_config import ModelConfig
-from rmsnorm import RMSNorm
+from .mqa import MQA, MQA_Cached
+from .embedding import TokenEmbedding
+from .mlp import SwiGLU
+from .model_config import ModelConfig
+from .rmsnorm import RMSNorm
 import sys
 from pathlib import Path
 
@@ -578,7 +578,7 @@ def test_first_decode(
     prompt_tokens,
     config,
 ):
-
+    
     model_nocache.eval()
     model_cache.eval()
 
@@ -672,13 +672,19 @@ if __name__ == "__main__":
     config = ModelConfig()
 
 
-    model_cache = Transformer(
-        config
-    ).to(device)
+    model_nocache = Transformer_nocache(config).cuda().half()
 
-    model_nocache = Transformer_nocache(
-        config
-    ).to(device)
+    model_cache = Transformer(config).cuda().half()
+
+    for model in [model_nocache, model_cache]:
+
+        for module in model.modules():
+
+            if hasattr(module, "cos_cache"):
+                module.cos_cache = module.cos_cache.float()
+
+            if hasattr(module, "sin_cache"):
+                module.sin_cache = module.sin_cache.float()
 
     # Same weights.
     model_nocache.load_state_dict(
@@ -686,7 +692,7 @@ if __name__ == "__main__":
     )
 
 
-    B = 8
+    B = 2
     T = 512
     MAX_NEW_TOKENS = 20
 

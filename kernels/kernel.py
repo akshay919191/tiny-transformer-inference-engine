@@ -29,7 +29,7 @@ for p in KERNEL_PATHS:
 import rmsnorm_cuda
 import softmax_cuda
 import rope_cuda
-import flashattn
+import flash_acc_reg_ext as flashattn
 import topk_cuda
 
 """
@@ -99,7 +99,7 @@ class FlashAttn(torch.autograd.Function):
         v: torch.Tensor,
         causal: bool
     ):
-        out, L = flashattn.forward(
+        out, L = flashattn.flash_fwd(
             q, k, v, causal
         )
 
@@ -117,7 +117,7 @@ class FlashAttn(torch.autograd.Function):
         q, k, v, out, L = ctx.saved_tensors
         causal = ctx.causal
 
-        dq, dk, dv = flashattn.backward(
+        dq, dk, dv = flashattn.flash_bwd(
             q,
             k,
             v,
@@ -164,7 +164,7 @@ class Rope(torch.autograd.Function):
         cos,
         sin,
         rotary_dim,
-        position_offset
+        position_offset,
     ):
         result = rope_cuda.forward(
             x,
@@ -172,16 +172,15 @@ class Rope(torch.autograd.Function):
             cos,
             sin,
             rotary_dim,
-            position_offset
+            position_offset,
         )
 
-        ctx.save_for_backward(
-            position_ids,
-            cos,
-            sin
-        )
+        if position_ids is not None:
+            ctx.save_for_backward(position_ids, cos, sin)
+        else:
+            ctx.save_for_backward(cos, sin)
 
-        # Non-tensors
+        ctx.has_position_ids = position_ids is not None
         ctx.rotary_dim = rotary_dim
         ctx.position_offset = position_offset
 
@@ -190,7 +189,11 @@ class Rope(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
 
-        position_ids, cos, sin = ctx.saved_tensors
+        if ctx.has_position_ids:
+            position_ids, cos, sin = ctx.saved_tensors
+        else:
+            cos, sin = ctx.saved_tensors
+            position_ids = None
 
         dx = rope_cuda.backward(
             grad_output,
@@ -198,16 +201,14 @@ class Rope(torch.autograd.Function):
             cos,
             sin,
             ctx.rotary_dim,
-            ctx.position_offset
+            ctx.position_offset,
         )
 
         return (
-            dx,       
-            None,    
-            None,    
-            None,    
-            None,     
-            None      
+            dx,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
-
-
