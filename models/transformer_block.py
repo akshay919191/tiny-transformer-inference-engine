@@ -2,7 +2,9 @@ import torch
 import time
 import torch.nn as nn
 import torch.nn.functional as F
+import argparse
 
+from .attention import MHA, MHA_CACHED
 from .mqa import MQA, MQA_Cached
 from .embedding import TokenEmbedding
 from .mlp import SwiGLU
@@ -10,6 +12,14 @@ from .model_config import ModelConfig
 from .rmsnorm import RMSNorm
 import sys
 from pathlib import Path
+
+from kernels.kernel import (
+    TopK,
+    Rope,
+    FlashAttn,
+    RMSNormFunction,
+)
+topk = TopK()
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -19,15 +29,44 @@ if str(ROOT) not in sys.path:
 from kv_cache import KVCache_kv
 
 
+def _build_attention(config, attn_type, backend, cached):
+    """
+    attn_type: "mha" or "mqa"
+    backend:   "cuda" or "pytorch" (forwarded to the chosen attention module)
+    cached:    True -> return the KV-cache-aware variant
+    """
+
+    assert attn_type in ("mha", "mqa"), \
+        f"attn_type must be 'mha' or 'mqa', got {attn_type!r}"
+
+    if attn_type == "mqa":
+        cls = MQA_Cached if cached else MQA
+        return cls(config, backend=backend)
+
+    cls = MHA_CACHED if cached else MHA
+
+    return cls(
+        numhead=config.num_heads,
+        dmodel=config.d_model,
+        dropout=config.dropout,
+        bias=config.bias,
+        backend=backend,
+        max_seq_len=config.max_seq_len,
+    )
+
+
 class TransformerBlock_Nocache(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, attn_type="mqa", backend="cuda"):
         super().__init__()
 
         self.attn_norm = RMSNorm(config.d_model)
 
-        self.attn = MQA(
-            config
+        self.attn = _build_attention(
+            config,
+            attn_type=attn_type,
+            backend=backend,
+            cached=False,
         )
 
         self.mlp_norm = RMSNorm(config.d_model)
@@ -66,7 +105,7 @@ class TransformerBlock_Nocache(nn.Module):
 
 class Transformer_nocache(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, attn_type="mqa", backend="cuda"):
         super().__init__()
 
         self.embedding = TokenEmbedding(
@@ -75,7 +114,11 @@ class Transformer_nocache(nn.Module):
         )
 
         self.layers = nn.ModuleList([
-            TransformerBlock_Nocache(config)
+            TransformerBlock_Nocache(
+                config,
+                attn_type=attn_type,
+                backend=backend,
+            )
             for _ in range(config.num_layers)
         ])
 
@@ -104,15 +147,18 @@ class Transformer_nocache(nn.Module):
 
 class TransformerBlock(nn.Module):
 
-    def __init__(self, config, layer_idx):
+    def __init__(self, config, layer_idx, attn_type="mqa", backend="cuda"):
         super().__init__()
 
         self.layer_idx = layer_idx
 
         self.attn_norm = RMSNorm(config.d_model)
 
-        self.attn = MQA_Cached(
-            config
+        self.attn = _build_attention(
+            config,
+            attn_type=attn_type,
+            backend=backend,
+            cached=True,
         )
 
         self.mlp_norm = RMSNorm(config.d_model)
@@ -153,7 +199,7 @@ class TransformerBlock(nn.Module):
 
 class Transformer(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, attn_type="mqa", backend="cuda"):
         super().__init__()
 
         self.embedding = TokenEmbedding(
@@ -165,6 +211,8 @@ class Transformer(nn.Module):
             TransformerBlock(
                 config,
                 layer_idx=i,
+                attn_type=attn_type,
+                backend=backend,
             )
             for i in range(config.num_layers)
         ])
@@ -187,6 +235,7 @@ class Transformer(nn.Module):
                 x,
                 kv_cache=kv_cache,
             )
+
         if kv_cache is not None:
             kv_cache.advance(input_ids.shape[1])
 
@@ -197,19 +246,19 @@ class Transformer(nn.Module):
         return logits
 
 
-# def make_kv_cache(model, config, batch_size, max_seq_len, device):
+def make_kv_cache(model, config, batch_size, max_seq_len, device):
 
-#     head_dim = config.d_model // config.num_heads
+    head_dim = config.d_model // config.num_heads
 
-#     return KVCache(
-#         num_layers=config.num_layers,
-#         batch_size=batch_size,
-#         num_heads=config.num_heads,
-#         max_seq_len=max_seq_len,
-#         head_dim=head_dim,
-#         dtype=next(model.parameters()).dtype,
-#         device=device,
-#     )
+    return KVCache(
+        num_layers=config.num_layers,
+        batch_size=batch_size,
+        num_heads=config.num_heads,
+        max_seq_len=max_seq_len,
+        head_dim=head_dim,
+        dtype=next(model.parameters()).dtype,
+        device=device,
+    )
 
 def make_kv_cache_(model, config, batch_size, max_seq_len, device):
 
@@ -225,574 +274,3 @@ def make_kv_cache_(model, config, batch_size, max_seq_len, device):
         device=device,
     )
 
-def smaple_temperature(
-        logits,
-        temp = 0.4
-):
-    if temp <= 0:
-        raise ValueError("must be > 0")
-
-    logits = logits / temp
-
-    logits = nn.functional.softmax(logits , dim = -1)
-
-    next_token = torch.multinomial(
-        logits , num_samples = 1
-    )
-
-    return next_token
-
-def apply_top_p(logits, top_p):
-
-    if top_p >= 1.0:
-        return logits
-
-    if top_p <= 0.0:
-        raise ValueError("top_p must be > 0")
-
-    sorted_logits, sorted_indices = torch.sort(
-        logits,
-        descending=True,
-        dim=-1,
-    )
-
-    sorted_probs = F.softmax(
-        sorted_logits,
-        dim=-1,
-    )
-
-    cumulative_probs = torch.cumsum(
-        sorted_probs,
-        dim=-1,
-    )
-
-    remove = cumulative_probs > top_p
-
-    remove[:, 1:] = remove[:, :-1].clone()
-
-    remove[:, 0] = False
-
-    sorted_logits = sorted_logits.masked_fill(
-        remove,
-        float("-inf"),
-    )
-
-    logits = torch.full_like(
-        logits,
-        float("-inf"),
-    )
-
-    logits.scatter_(
-        dim=-1,
-        index=sorted_indices,
-        src=sorted_logits,
-    )
-
-    return logits
-
-def apply_top_k(
-        logits ,
-        topk_digit
-):
-    if topk_digit <= 0:
-        return logits
-
-    topk = min(topk_digit , logits.shape[-1])
-
-    final , _ = torch.topk(
-        logits ,
-        topk,
-        dim = -1
-    )
-
-    kth = final[: , -1].unsqueeze(-1)
-
-    logit = logits.masked_fill(
-        logits < kth,
-        float("-inf")
-    )
-
-    return logit
-
-def sample(
-    logits,
-    temperature=1.0,
-    top_k=0,
-    top_p=1.0,
-):
-
-    if temperature <= 0:
-        raise ValueError(
-            "temperature must be > 0"
-        )
-
-
-    logits = logits / temperature
-
-    if top_k > 0:
-        logits = apply_top_k(
-            logits,
-            top_k,
-        )
-
-    if top_p < 1.0:
-        logits = apply_top_p(
-            logits,
-            top_p,
-        )
-
-    probs = F.softmax(
-        logits,
-        dim=-1,
-    )
-
-
-    next_token = torch.multinomial(
-        probs,
-        num_samples=1,
-    )
-
-    return next_token
-
-@torch.no_grad()
-def generate(
-    model,
-    prompt_tokens,
-    max_new_tokens,
-    config,
-):
-
-    model.eval()
-
-    tokens = prompt_tokens
-
-    if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
-
-    kv_cache = make_kv_cache_(
-        model,
-        config,
-        batch_size=prompt_tokens.shape[0],
-        max_seq_len=(
-            prompt_tokens.shape[1]
-            + max_new_tokens
-        ),
-        device=prompt_tokens.device,
-    )
-
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-
-    start = time.perf_counter()
-
-    logits = model(
-        tokens,
-        kv_cache=kv_cache,
-    )
-
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-
-    ttft_end = time.perf_counter()
-
-    for step in range(max_new_tokens):
-
-        next_token_logits = logits[:, -1, :]
-
-        next_token = sample(
-            next_token_logits,
-            temperature=0.8,
-            top_k=50,
-            top_p=0.9,
-        )
-
-        tokens = torch.cat(
-            [tokens, next_token],
-            dim=1,
-        )
-
-        new_token = tokens[:, -1:]
-        logits = model(
-            new_token,
-            kv_cache=kv_cache,
-        )
-
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-
-    end = time.perf_counter()
-
-    ttft_ms = (
-        ttft_end - start
-    ) * 1000
-
-    total_ms = (
-        end - start
-    ) * 1000
-
-    decode_ms = (
-        total_ms - ttft_ms
-    )
-
-    tokens_per_sec = (
-        max_new_tokens
-        / (total_ms / 1000)
-    )
-
-    if torch.cuda.is_available():
-        peak_memory_mb = (
-            torch.cuda.max_memory_allocated()
-            / (1024 ** 2)
-        )
-    else:
-        peak_memory_mb = 0.0
-
-    print("KV CACHE")
-
-    print(
-        f"prompt length: {prompt_tokens.shape[1]}"
-    )
-
-    print(
-        f"generate:      {max_new_tokens} tokens"
-    )
-
-    print(
-        f"TTFT:          {ttft_ms:.3f} ms"
-    )
-
-    print(
-        f"decode time:   {decode_ms:.3f} ms"
-    )
-
-    print(
-        f"total:         {total_ms:.3f} ms"
-    )
-
-    print(
-        f"tokens/sec:    {tokens_per_sec:.2f}"
-    )
-
-    print(
-        f"peak memory:   {peak_memory_mb:.2f} MB"
-    )
-
-    print(
-        f"final length:  {tokens.shape[1]}"
-    )
-
-    return tokens
-
-@torch.no_grad()
-def generate_nocache(
-    model,
-    prompt_tokens,
-    max_new_tokens,
-):
-
-    model.eval()
-
-    tokens = prompt_tokens
-
-    if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
-
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-
-    start = time.perf_counter()
-
-    for step in range(max_new_tokens):
-
-        logits = model(tokens)
-
-        next_token_logits = logits[:, -1, :]
-
-        next_token = sample(
-            next_token_logits,
-            temperature=0.8,
-            top_k=50,
-            top_p=0.9,
-        )
-
-        tokens = torch.cat(
-            [tokens, next_token],
-            dim=1,
-        )
-
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-
-    end = time.perf_counter()
-
-    total_ms = (
-        end - start
-    ) * 1000
-
-    tokens_per_sec = (
-        max_new_tokens
-        / (total_ms / 1000)
-    )
-
-    if torch.cuda.is_available():
-        peak_memory_mb = (
-            torch.cuda.max_memory_allocated()
-            / (1024 ** 2)
-        )
-    else:
-        peak_memory_mb = 0.0
-
-    print("NO KV CACHE")
-
-    print(
-        f"prompt length: {prompt_tokens.shape[1]}"
-    )
-    print(
-        f"generate:      {max_new_tokens} tokens"
-    )
-    print(
-        f"total:         {total_ms:.3f} ms"
-    )
-    print(
-        f"tokens/sec:    {tokens_per_sec:.2f}"
-    )
-    print(
-        f"peak memory:   {peak_memory_mb:.2f} MB"
-    )
-    print(
-        f"final length:  {tokens.shape[1]}"
-    )
-
-
-    return tokens
-
-# ============================================================
-# LLM GENERATED
-# ============================================================
-
-
-@torch.no_grad()
-def test_first_decode(
-    model_nocache,
-    model_cache,
-    prompt_tokens,
-    config,
-):
-    
-    model_nocache.eval()
-    model_cache.eval()
-
-    logits_nc = model_nocache(
-        prompt_tokens
-    )
-
-    cache = make_kv_cache_(
-        model_cache,
-        config,
-        batch_size=prompt_tokens.shape[0],
-        max_seq_len=prompt_tokens.shape[1] + 1,
-        device=prompt_tokens.device,
-    )
-
-    logits_c = model_cache(
-        prompt_tokens,
-        kv_cache=cache,
-    )
-
-    prefill_diff = (
-        logits_nc - logits_c
-    ).abs().max()
-
-    print(
-        "Prefill max diff:",
-        prefill_diff.item()
-    )
-
-
-    next_token = torch.argmax(
-        logits_nc[:, -1, :],
-        dim=-1,
-        keepdim=True,
-    )
-
-    tokens = torch.cat(
-        [
-            prompt_tokens,
-            next_token,
-        ],
-        dim=1,
-    )
-
-
-    logits_nc = model_nocache(
-        tokens
-    )
-
-    logits_c = model_cache(
-        next_token,
-        kv_cache=cache,
-    )
-
-    diff = (
-        logits_nc[:, -1, :]
-        -
-        logits_c[:, -1, :]
-    ).abs().max()
-
-    print(
-        "First decode max diff:",
-        diff.item()
-    )
-
-    print(
-        "No-cache next:",
-        torch.argmax(
-            logits_nc[:, -1, :],
-            dim=-1,
-        )
-    )
-
-    print(
-        "KV-cache next:",
-        torch.argmax(
-            logits_c[:, -1, :],
-            dim=-1,
-        )
-    )
-
-
-if __name__ == "__main__":
-
-    device = torch.device(
-        "cuda"
-        if torch.cuda.is_available()
-        else "cpu"
-    )
-
-    config = ModelConfig()
-
-
-    model_nocache = Transformer_nocache(config).cuda().half()
-
-    model_cache = Transformer(config).cuda().half()
-
-    for model in [model_nocache, model_cache]:
-
-        for module in model.modules():
-
-            if hasattr(module, "cos_cache"):
-                module.cos_cache = module.cos_cache.float()
-
-            if hasattr(module, "sin_cache"):
-                module.sin_cache = module.sin_cache.float()
-
-    # Same weights.
-    model_nocache.load_state_dict(
-        model_cache.state_dict()
-    )
-
-
-    B = 2
-    T = 512
-    MAX_NEW_TOKENS = 20
-
-    prompt_tokens = torch.randint(
-        0,
-        config.vocab_size,
-        (B, T),
-        device=device,
-    )
-
-    # Reset CUDA peak-memory measurement.
-    if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
-
-
-    print("\n\n")
-    print("########################################")
-    print("#          WITHOUT KV CACHE            #")
-    print("########################################")
-
-    generated_nocache = generate_nocache(
-        model_nocache,
-        prompt_tokens,
-        max_new_tokens=MAX_NEW_TOKENS,
-    )
-
-
-    if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
-
-    print("\n\n")
-    print("########################################")
-    print("#           WITH KV CACHE               #")
-    print("########################################")
-
-    generated_cache = generate(
-        model_cache,
-        prompt_tokens,
-        max_new_tokens=MAX_NEW_TOKENS,
-        config=config,
-    )
-
-
-    print()
-    print("Prompt shape:")
-    print(prompt_tokens.shape)
-
-    print()
-    print("No-cache output:")
-    print(generated_nocache.shape)
-
-    print()
-    print("KV-cache output:")
-    print(generated_cache.shape)
-
-    same = torch.equal(
-        generated_nocache,
-        generated_cache,
-    )
-
-    print()
-    print(
-        "Outputs identical:",
-        same,
-    )
-
-
-    with torch.no_grad():
-
-        logits_nocache = model_nocache(
-            prompt_tokens
-        )
-
-        prefill_cache = make_kv_cache_(
-            model_cache,
-            config,
-            batch_size=B,
-            max_seq_len=T + 1,
-            device=device,
-        )
-
-        logits_cache = model_cache(
-            prompt_tokens,
-            kv_cache=prefill_cache,
-        )
-
-        diff = (
-            logits_nocache
-            -
-            logits_cache
-        ).abs().max()
-
-        print(
-            "Prefill max diff:",
-            diff.item()
-        )
-
-    test_first_decode(
-        model_nocache,
-        model_cache,
-        prompt_tokens,
-        config,
-    )

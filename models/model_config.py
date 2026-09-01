@@ -9,7 +9,7 @@ class ModelConfig:
     num_layers: int = 2
     num_heads: int = 8
     num_kv_heads : int = 1
-    max_seq_len: int = 1024
+    max_seq_len: int = 2048
     d_model : int  = 512
     casual = False
     dropout = 0.0

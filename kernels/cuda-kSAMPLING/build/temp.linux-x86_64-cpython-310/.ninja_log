@@ -1,3 +1,4 @@
 # ninja log v7
-0	10800	1786773087243090108	/home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/cuda-kSAMPLING/build/temp.linux-x86_64-cpython-310/binding.o	7c2efc1eea10ca75
-1	36962	1786773087244090138	/home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/cuda-kSAMPLING/build/temp.linux-x86_64-cpython-310/ksampling_kernel.o	c75590adbaff6f53
+0	11974	1788266522922008116	/home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/cuda-kSAMPLING/build/temp.linux-x86_64-cpython-310/binding.o	d2f089de86b98eb0
+0	42237	1788266522922008116	/home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/cuda-kSAMPLING/build/temp.linux-x86_64-cpython-310/ksampling_kernel.o	d844a8aedb732858
+12	42076	1788266673909803223	/home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/cuda-kSAMPLING/build/temp.linux-x86_64-cpython-310/ksampling_kernel.o	d844a8aedb732858

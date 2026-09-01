@@ -8,49 +8,31 @@ from .rope import RoPE
 from kernels.kernel import (
     Rope,
     FlashAttn,
-    RMSNormFunction,
-    Softmax,       
-    rope_cache 
+    rope_cache,
 )
 
+
 class MQA(nn.Module):
-    """
-    Multi-Query / Grouped-Query Attention.
 
-    Q has num_heads.
-
-    K/V have num_kv_heads.
-
-    True MQA:
-        num_kv_heads = 1
-
-    GQA:
-        1 < num_kv_heads < num_heads
-    """
-
-    def __init__(self, config):
+    def __init__(self, config, backend="cuda"):
         super().__init__()
 
         self.d_model = config.d_model
-
         self.num_heads = config.num_heads
         self.num_kv_heads = config.num_kv_heads
 
         self.bias = config.bias
         self.dropout = config.dropout
 
+        self.backend = backend
+
+        assert self.backend in ("cuda", "pytorch")
         assert self.d_model % self.num_heads == 0
-
-        self.headdim = (
-            self.d_model // self.num_heads
-        )
-
         assert self.num_heads % self.num_kv_heads == 0
 
-        self.num_groups = (
-            self.num_heads // self.num_kv_heads
-        )
-
+        self.headdim = self.d_model // self.num_heads
+        self.num_groups = self.num_heads // self.num_kv_heads
+        self.rotary_dim = self.headdim
 
         self.q_proj = nn.Linear(
             self.d_model,
@@ -76,32 +58,113 @@ class MQA(nn.Module):
             bias=self.bias,
         )
 
+        if self.backend == "cuda":
 
-        self.rotary_dim = self.headdim
+            reference = torch.empty(
+                1,
+                dtype=torch.float16,
+                device="cuda",
+            )
 
-        reference = torch.empty(
-            1,
-            dtype=torch.float16,
-            device="cuda",
-        )
+            cos, sin = rope_cache(
+                reference,
+                config.max_seq_len,
+                self.rotary_dim,
+            )
 
-        cos, sin = rope_cache(
-            reference,
-            config.max_seq_len,
-            self.rotary_dim,
-        )
+            self.register_buffer(
+                "cos_cache",
+                cos.float().contiguous(),
+                persistent=False,
+            )
 
-        self.register_buffer(
-            "cos_cache",
-            cos,
-            persistent=False,
-        )
+            self.register_buffer(
+                "sin_cache",
+                sin.float().contiguous(),
+                persistent=False,
+            )
 
-        self.register_buffer(
-            "sin_cache",
-            sin,
-            persistent=False,
-        )
+            self.rope = None
+
+        else:
+
+            self.rope = RoPE(
+                self.rotary_dim,
+                config.max_seq_len,
+            )
+
+            self.cos_cache = None
+            self.sin_cache = None
+
+    def _apply_rope(
+        self,
+        q,
+        k,
+        position_offset,
+    ):
+
+        if self.backend == "cuda":
+
+            q = Rope.apply(
+                q.contiguous(),
+                None,
+                self.cos_cache,
+                self.sin_cache,
+                self.rotary_dim,
+                position_offset,
+            )
+
+            k = Rope.apply(
+                k.contiguous(),
+                None,
+                self.cos_cache,
+                self.sin_cache,
+                self.rotary_dim,
+                position_offset,
+            )
+
+            return q, k
+
+        else:
+
+            q, k = self.rope(
+                q,
+                k,
+                position_offset=position_offset,
+            )
+
+            return q, k
+
+    def _attention(
+        self,
+        q,
+        k,
+        v,
+        causal,
+    ):
+
+        if self.backend == "cuda":
+
+            return FlashAttn.apply(
+                q.contiguous(),
+                k.contiguous(),
+                v.contiguous(),
+                causal,
+            )
+
+        else:
+
+            return F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                is_causal=causal,
+                dropout_p=(
+                    self.dropout
+                    if self.training
+                    else 0.0
+                ),
+            )
 
     def forward(
         self,
@@ -117,11 +180,8 @@ class MQA(nn.Module):
         SK = key.shape[1]
 
         q = self.q_proj(query)
-
         k = self.k_proj(key)
-
         v = self.v_proj(value)
-
 
         q = q.view(
             B,
@@ -144,22 +204,9 @@ class MQA(nn.Module):
             self.headdim,
         ).transpose(1, 2).contiguous()
 
-
-        q = Rope.apply(
+        q, k = self._apply_rope(
             q,
-            None,
-            self.cos_cache,
-            self.sin_cache,
-            self.rotary_dim,
-            position_offset,
-        )
-
-        k = Rope.apply(
             k,
-            None,
-            self.cos_cache,
-            self.sin_cache,
-            self.rotary_dim,
             position_offset,
         )
 
@@ -175,7 +222,7 @@ class MQA(nn.Module):
 
         needs_mask = causal and (SQ == SK)
 
-        out = FlashAttn.apply(
+        out = self._attention(
             q,
             k,
             v,
@@ -199,9 +246,11 @@ class MQA(nn.Module):
             return out, None
 
         return out
+
+
 class MQA_Cached(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, backend="cuda"):
         super().__init__()
 
         self.d_model = config.d_model
@@ -211,14 +260,14 @@ class MQA_Cached(nn.Module):
         self.bias = config.bias
         self.dropout = config.dropout
 
+        self.backend = backend
+
+        assert self.backend in ("cuda", "pytorch")
         assert self.d_model % self.num_heads == 0
-
-        self.headdim = self.d_model // self.num_heads
-
         assert self.num_heads % self.num_kv_heads == 0
 
+        self.headdim = self.d_model // self.num_heads
         self.num_groups = self.num_heads // self.num_kv_heads
-
         self.rotary_dim = self.headdim
 
         self.q_proj = nn.Linear(
@@ -245,29 +294,113 @@ class MQA_Cached(nn.Module):
             bias=self.bias,
         )
 
-        reference = torch.empty(
-            1,
-            dtype=torch.float16,
-            device="cuda",
-        )
+        if self.backend == "cuda":
 
-        cos, sin = rope_cache(
-            reference,
-            config.max_seq_len,
-            self.rotary_dim,
-        )
+            reference = torch.empty(
+                1,
+                dtype=torch.float16,
+                device="cuda",
+            )
 
-        self.register_buffer(
-            "cos_cache",
-            cos,
-            persistent=False,
-        )
+            cos, sin = rope_cache(
+                reference,
+                config.max_seq_len,
+                self.rotary_dim,
+            )
 
-        self.register_buffer(
-            "sin_cache",
-            sin,
-            persistent=False,
-        )
+            self.register_buffer(
+                "cos_cache",
+                cos.float().contiguous(),
+                persistent=False,
+            )
+
+            self.register_buffer(
+                "sin_cache",
+                sin.float().contiguous(),
+                persistent=False,
+            )
+
+            self.rope = None
+
+        else:
+
+            self.rope = RoPE(
+                self.rotary_dim,
+                config.max_seq_len,
+            )
+
+            self.cos_cache = None
+            self.sin_cache = None
+
+    def _apply_rope(
+        self,
+        q,
+        k,
+        position_offset,
+    ):
+
+        if self.backend == "cuda":
+
+            q = Rope.apply(
+                q.contiguous(),
+                None,
+                self.cos_cache,
+                self.sin_cache,
+                self.rotary_dim,
+                position_offset,
+            )
+
+            k = Rope.apply(
+                k.contiguous(),
+                None,
+                self.cos_cache,
+                self.sin_cache,
+                self.rotary_dim,
+                position_offset,
+            )
+
+            return q, k
+
+        else:
+
+            q, k = self.rope(
+                q,
+                k,
+                position_offset=position_offset,
+            )
+
+            return q, k
+
+    def _attention(
+        self,
+        q,
+        k,
+        v,
+        causal,
+    ):
+
+        if self.backend == "cuda":
+
+            return FlashAttn.apply(
+                q.contiguous(),
+                k.contiguous(),
+                v.contiguous(),
+                causal,
+            )
+
+        else:
+
+            return F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                is_causal=causal,
+                dropout_p=(
+                    self.dropout
+                    if self.training
+                    else 0.0
+                ),
+            )
 
     def forward(
         self,
@@ -282,7 +415,7 @@ class MQA_Cached(nn.Module):
 
         B, SQ, _ = query.shape
         SK_new = key.shape[1]
-        
+
         q = self.q_proj(query)
         k = self.k_proj(key)
         v = self.v_proj(value)
@@ -308,33 +441,16 @@ class MQA_Cached(nn.Module):
             self.headdim,
         ).transpose(1, 2).contiguous()
 
-
         position_offset = 0
 
         if kv_cache is not None:
             position_offset = kv_cache.length
 
-        # Custom RoPE
-
-        q = Rope.apply(
+        q, k = self._apply_rope(
             q,
-            None,
-            self.cos_cache,
-            self.sin_cache,
-            self.rotary_dim,
-            position_offset,
-        )
-
-        k = Rope.apply(
             k,
-            None,
-            self.cos_cache,
-            self.sin_cache,
-            self.rotary_dim,
             position_offset,
         )
-
-        # KV CACHE
 
         if kv_cache is not None:
 
@@ -345,9 +461,8 @@ class MQA_Cached(nn.Module):
             )
 
         SK = k.shape[2]
-        needs_mask = causal and (SQ == SK)
 
-        # GQA
+        needs_mask = causal and (SQ == SK)
 
         k = k.repeat_interleave(
             self.num_groups,
@@ -359,16 +474,13 @@ class MQA_Cached(nn.Module):
             dim=1,
         )
 
-        # CUSTOM FLASH ATTENTION
-
-        out = FlashAttn.apply(
+        out = self._attention(
             q,
             k,
             v,
             needs_mask,
         )
 
-        # Merge heads
         out = (
             out
             .transpose(1, 2)
@@ -379,8 +491,6 @@ class MQA_Cached(nn.Module):
                 self.d_model,
             )
         )
-
-        # Output projection
 
         out = self.out(out)
 

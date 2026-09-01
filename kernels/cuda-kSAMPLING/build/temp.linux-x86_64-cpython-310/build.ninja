@@ -26,8 +26,8 @@ rule cuda_compile
 
 
 
-build /home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/cuda-kSAMPLING/build/temp.linux-x86_64-cpython-310/binding.o: compile /home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/cuda-kSAMPLING/binding.cpp
-build /home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/cuda-kSAMPLING/build/temp.linux-x86_64-cpython-310/ksampling_kernel.o: cuda_compile /home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/cuda-kSAMPLING/ksampling_kernel.cu
+build /home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/cuda-kSAMPLING/build/temp.linux-x86_64-cpython-310/binding.o: compile /home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/cuda-kSAMPLING/binding.cpp
+build /home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/cuda-kSAMPLING/build/temp.linux-x86_64-cpython-310/ksampling_kernel.o: cuda_compile /home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/cuda-kSAMPLING/ksampling_kernel.cu
 
 
 

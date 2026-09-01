@@ -87,7 +87,7 @@ class Softmax(torch.autograd.Function):
 
 class TopK:
     def __call__(self, x, k):
-        return topk_cuda.forward(x, k)
+        return topk_cuda.topk(x, k)
 
 class FlashAttn(torch.autograd.Function):
 
