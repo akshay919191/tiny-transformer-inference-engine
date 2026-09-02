@@ -117,6 +117,8 @@ class FlashAttn(torch.autograd.Function):
         q, k, v, out, L = ctx.saved_tensors
         causal = ctx.causal
 
+        grad_output = grad_output.contiguous()
+
         dq, dk, dv = flashattn.flash_bwd(
             q,
             k,

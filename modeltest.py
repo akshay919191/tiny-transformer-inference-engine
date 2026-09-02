@@ -36,6 +36,8 @@ if __name__ == "__main__":
     model_config = ModelConfig()
     runtime_config = CONFIG()
 
+    print(runtime_config.casual)
+
     model_config.batch = args.batch
 
     model_cache = Transformer(

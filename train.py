@@ -11,7 +11,6 @@ from models.transformer_block import Transformer
 from models.model_config import ModelConfig
 
 
-# ------------------------------------------------- argparse setup
 
 def str2bool(v):
     return str(v).lower() in ("1", "true", "yes", "y")
@@ -39,7 +38,7 @@ def build_parser():
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=0.1)
     p.add_argument("--device", type=str, default="cuda")
-    p.add_argument("--causal", type=bool, default = True)
+    p.add_argument("--causal", type=str2bool, default=True)
     p.add_argument("--backend", type=str, default="cuda", choices=["cuda", "pytorch"],
                    help="attention kernel implementation")
     p.add_argument("--attn_type", type=str, default="mqa", choices=["mqa", "mha"],
@@ -75,15 +74,26 @@ def train(args):
     device = args.device
 
     run_time = ModelConfig(**{f.name: getattr(args, f.name) for f in fields(ModelConfig)})
-    print(run_time)   
 
-    if args.seed is not None:
-        torch.manual_seed(args.seed)
-        run_time.casual = args.causal
+    run_time.casual = args.causal
+    okay = torch.cuda.is_available()
 
-        model = Transformer(run_time, attn_type=args.attn_type, backend=args.backend).to(device)
+    model = Transformer(run_time, attn_type=args.attn_type, backend=args.backend).to(device)
+    model = model.cuda().half() if okay else model.cpu().half()
+
+    for model in [model]:
+        for module in model.modules():
+            if hasattr(module, "cos_cache") and module.cos_cache is not None:
+                module.cos_cache = module.cos_cache.float()
+
+            if hasattr(module, "sin_cache") and module.sin_cache is not None:
+                 module.sin_cache = module.sin_cache.float()
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     model.train()
+
+    run_time.causal = args.causal
+    print(f"[DEBUG] run_time.causal = {run_time.causal}")
 
     for step in range(args.max_steps):
         input_ids = get_batch("train", run_time, device)
@@ -96,22 +106,22 @@ def train(args):
         loss.backward()
         optimizer.step()
 
-        if step % args.log_every == 0:
-            model.eval()
-            with torch.no_grad():
-                val_ids = get_batch("val", run_time, device)
-                vx, vy = val_ids[:, :-1], val_ids[:, 1:]
-                val_logits = model(vx)
-                val_loss = F.cross_entropy(val_logits.reshape(-1, val_logits.size(-1)), vy.reshape(-1))
-            model.train()
+        model.eval()
+        with torch.no_grad():
+            val_ids = get_batch("val", run_time, device)
+            vx, vy = val_ids[:, :-1], val_ids[:, 1:]
+            val_logits = model(vx)
+            val_loss = F.cross_entropy(val_logits.reshape(-1, val_logits.size(-1)), vy.reshape(-1))
+        model.train()
+
+        if step % 100 == 0:
             print(f"step {step} | train loss {loss.item():.4f} | val loss {val_loss.item():.4f}")
 
-        if step % args.save_every == 0 and step > 0:
-            save_checkpoint(os.path.join(args.out_dir, f"ckpt_step{step}.pt"),
-                            model, optimizer, step, run_time, args)
+        if step % 1000 == 0:
+            save_checkpoint(f"checkpoints/ckpt_step{step}.pt", model, optimizer, step, run_time, args)
 
-    save_checkpoint(os.path.join(args.out_dir, "ckpt_final.pt"),
-                    model, optimizer, args.max_steps, run_time, args)
+    save_checkpoint("checkpoints/ckpt_final.pt", model, optimizer, args.max_steps, run_time, args)
+
 
 
 if __name__ == "__main__":
