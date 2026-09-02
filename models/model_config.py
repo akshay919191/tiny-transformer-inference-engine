@@ -4,15 +4,15 @@ import torch
 ## initially tiny
 @dataclass
 class ModelConfig:
-    vocab_size: int = 32000
+    vocab_size: int = 50257
     hidden_size: int = 128
-    num_layers: int = 2
+    num_layers: int = 8
     num_heads: int = 8
     num_kv_heads : int = 1
-    max_seq_len: int = 2048
-    d_model : int  = 512
-    casual = False
+    max_seq_len: int = 512
+    d_model : int  = 256
+    casual = True
     dropout = 0.0
     bias = False
-    batch = 2
+    batch = 4
     dtype = torch.float32

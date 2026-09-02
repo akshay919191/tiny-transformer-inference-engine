@@ -8,3 +8,4 @@ class CONFIG:
     backend = "cuda"
     attn = "mqa"
     promptlength = 512
+    max_steps = 5000
