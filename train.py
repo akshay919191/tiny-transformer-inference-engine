@@ -10,8 +10,6 @@ import torch.nn.functional as F
 from models.transformer_block import Transformer
 from models.model_config import ModelConfig
 
-
-
 def str2bool(v):
     return str(v).lower() in ("1", "true", "yes", "y")
 
@@ -123,7 +121,6 @@ def train(args):
     save_checkpoint("checkpoints/ckpt_final.pt", model, optimizer, args.max_steps, run_time, args)
 
 
-
+args = build_parser().parse_args()
 if __name__ == "__main__":
-    args = build_parser().parse_args()
     train(args)
