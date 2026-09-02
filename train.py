@@ -78,9 +78,8 @@ def save_checkpoint(path, model, optimizer, step, model_config, train_args):
 def train(args):
     device = args.device
 
-    # rebuild config from CLI flags (defaults already match the dataclass)
     run_time = ModelConfig(**{f.name: getattr(args, f.name) for f in fields(ModelConfig)})
-    print(run_time)   # dataclasses print nicely — sanity-check what you're training
+    print(run_time)   
 
     if args.seed is not None:
         torch.manual_seed(args.seed)

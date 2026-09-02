@@ -17,7 +17,6 @@ def load_model(ckpt_path):
     for k, v in ckpt["model_config"].items():
         setattr(run_time, k, v)
 
-    # restore implementation choices from training; fall back for old checkpoints
     train_cfg = ckpt.get("train_config", {})
     attn_type = train_cfg.get("attn_type", "mqa")
     backend = train_cfg.get("backend", "pytorch")
