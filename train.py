@@ -39,10 +39,7 @@ def build_parser():
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=0.1)
     p.add_argument("--device", type=str, default="cuda")
-    p.add_argument("--out_dir", type=str, default="checkpoints")
-    p.add_argument("--save_every", type=int, default=500)
-    p.add_argument("--log_every", type=int, default=100)
-    p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--causal", type=bool, default = True)
     p.add_argument("--backend", type=str, default="cuda", choices=["cuda", "pytorch"],
                    help="attention kernel implementation")
     p.add_argument("--attn_type", type=str, default="mqa", choices=["mqa", "mha"],
@@ -50,7 +47,6 @@ def build_parser():
 
     add_model_args(p)   
     return p
-
 
 
 def get_batch(split, config, device):
@@ -83,6 +79,7 @@ def train(args):
 
     if args.seed is not None:
         torch.manual_seed(args.seed)
+        run_time.casual = args.causal
 
         model = Transformer(run_time, attn_type=args.attn_type, backend=args.backend).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)

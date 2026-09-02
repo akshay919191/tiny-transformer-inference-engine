@@ -49,12 +49,13 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", default="checkpoints/ckpt_final.pt")
     p.add_argument("--prompt", default="Once upon a time")
-    p.add_argument("--max_new_tokens", type=int, default=100)
     p.add_argument("--temperature", type=float, default=1.0)
+    p.add_argument("--token", type=int, default=100)
+    args = p.parse_args()
     args = p.parse_args()
 
     model, run_time = load_model(args.ckpt)
 
-    for piece in generate(args.prompt, args.max_new_tokens, args.temperature):
+    for piece in generate(args.prompt, args.token, args.temperature):
         print(piece, end="", flush=True)
     print()
