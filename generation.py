@@ -28,8 +28,6 @@ def load_model(ckpt_path, device, attn_type=None, backend=None, causal=None):
     if causal is not None:
         run_time.causal = causal
 
-    print(f"[DEBUG] Loading model with attn_type={resolved_attn_type}, backend={resolved_backend}, causal={run_time.causal}")
-
     model = Transformer(run_time, attn_type=resolved_attn_type, backend=resolved_backend).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
