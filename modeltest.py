@@ -52,20 +52,6 @@ if __name__ == "__main__":
             backend = args.backend
         )
 
-    okay = torch.cuda.is_available()
-
-    model_cache = model_cache.cuda().half() if okay else model_cache.cpu().half()
-    model_nocache = model_nocache.cuda().half() if okay else model_nocache.cpu().half()
-
-    for model in [model_nocache, model_cache]:
-
-        for module in model.modules():
-
-            if hasattr(module, "cos_cache") and module.cos_cache is not None:
-                module.cos_cache = module.cos_cache.float()
-
-            if hasattr(module, "sin_cache") and module.sin_cache is not None:
-                module.sin_cache = module.sin_cache.float()
 
     model_nocache.load_state_dict(
         model_cache.state_dict()

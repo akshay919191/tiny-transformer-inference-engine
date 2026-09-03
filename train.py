@@ -74,10 +74,8 @@ def train(args):
     run_time = ModelConfig(**{f.name: getattr(args, f.name) for f in fields(ModelConfig)})
 
     run_time.casual = args.causal
-    okay = torch.cuda.is_available()
 
     model = Transformer(run_time, attn_type=args.attn_type, backend=args.backend).to(device)
-    model = model.cuda().half() if okay else model.cpu().half()
 
     for model in [model]:
         for module in model.modules():
