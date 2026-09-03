@@ -1,4 +1,3 @@
-````markdown
 # tiny-transformer-inference
 
 A GPT-style decoder-only transformer built from scratch in PyTorch, with optional Triton CUDA attention kernels.
@@ -27,7 +26,7 @@ Trained on TinyStories using the GPT-2 tokenizer.
 
 ```bash
 pip install -r requirements.txt
-````
+```
 
 ## Data
 
@@ -74,6 +73,24 @@ python generation.py \
 
 Tokens are printed to the terminal as they are generated (streaming).
 
+## Benchmarks
+
+Run the decode and prefill comparative benchmark suite:
+```bash
+python -m benchmarks.bench_decode_prefill --batch 32 --compare
+```
+
+### Performance Summary
+**Model Profile:** 27.7M parameters | MQA Attention | `d_model` 256 | 8 Layers | Batch 32 | Prompt Length 100
+
+| Metric | `cuda` (Triton) Backend | `pytorch` Backend | Improvement |
+| :--- | :---: | :---: | :---: |
+| **Prefill Latency (p50)** | **28.834 ms** | 31.343 ms | ~8.0% faster |
+| **Prefill Throughput** | **110,981.0 tok/s** | 102,097.8 tok/s | +8,883 tok/s |
+| **Decode Latency (p50)** | **3.056 ms** | 4.898 ms | ~37.6% faster |
+| **Decode Throughput** | **327.2 tok/s** | 204.2 tok/s | +123.0 tok/s |
+| **Peak VRAM Memory** | **1089 MB** | 1195 MB | Saving 106 MB |
+
 ## Project Structure
 
 ```text
@@ -117,7 +134,6 @@ tiny-transformer-inference/
 │   ├── flashattn/
 │   ├── rmsnorm_kernel/
 │   ├── rope_kernel/
-│   ├── softmax_kernel/
 │   └── kernel.py
 │
 ├── models/
