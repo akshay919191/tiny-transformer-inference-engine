@@ -50,7 +50,7 @@ python train.py --max_steps 5000 --lr 3e-4 --backend cuda --attn_type mqa
 | `--lr`           | `3e-4`  | Learning rate (AdamW)        |
 | `--weight_decay` | `0.1`   | Weight decay                 |
 | `--device`       | `cuda`  | Device                       |
-| `--backend`      | `cuda`  | `cuda` (Triton) or `pytorch` |
+| `--backend`      | `cuda`  | `cuda` (cpp extension) or `pytorch` |
 | `--attn_type`    | `mqa`   | `mqa` or `mha`               |
 
 Checkpoints are saved to `checkpoints/` and store both the model config and training flags, so inference reproduces the exact setup.
@@ -83,7 +83,7 @@ python -m benchmarks.bench_decode_prefill --batch 32 --compare
 ### Performance Summary
 **Model Profile:** 27.7M parameters | MQA Attention | `d_model` 256 | 8 Layers | Batch 32 | Prompt Length 100
 
-| Metric | `cuda` (Triton) Backend | `pytorch` Backend | Improvement |
+| Metric | `cuda` (cpp extension) Backend | `pytorch` Backend | Improvement |
 | :--- | :---: | :---: | :---: |
 | **Prefill Latency (p50)** | **28.834 ms** | 31.343 ms | ~8.0% faster |
 | **Prefill Throughput** | **110,981.0 tok/s** | 102,097.8 tok/s | +8,883 tok/s |
