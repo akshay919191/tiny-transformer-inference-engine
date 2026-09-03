@@ -94,6 +94,7 @@ def bench_decode(model, prompt_tokens, make_cache, num_tokens=128, warmup=10):
 
 
 
+
 def fmt_stats(ms):
     return (f"p50 {statistics.median(ms):8.3f} ms | "
             f"mean {statistics.mean(ms):8.3f} ms | "
@@ -117,6 +118,8 @@ def run_one(label, model, cfg, args, device):
 
     torch.cuda.reset_peak_memory_stats(device)
     decode_ms = bench_decode(model, tokens, make_cache, args.num_tokens, args.warmup)
+    for i in range(0, len(decode_ms), 50):
+        print(f"step {i:3d}: {decode_ms[i]:.3f} ms")
     per_tok = statistics.median(decode_ms)
     peak = torch.cuda.max_memory_allocated(device) / 1024**2
     print(f"Decode   ({args.num_tokens} steps)   {fmt_stats(decode_ms)}")
@@ -152,6 +155,10 @@ def main():
     tcfg = ckpt.get("train_config", {})
     attn_type = tcfg.get("attn_type", "mqa")
 
+    import statistics
+
+
+
     params = sum(p.numel() for p in Transformer(cfg, backend="pytorch").parameters())
     print("Tiny Transformer Inference Benchmark")
     print(f"  params {params/1e6:.1f}M | attn {attn_type} | "
@@ -161,6 +168,46 @@ def main():
     backend = tcfg.get("backend", "pytorch")
     model = build_model(cfg, ckpt["model"], backend, attn_type, device)
     run_one(f"backend={backend} attn={attn_type}", model, cfg, args, device)
+
+    def decode_latency_at(prompt_len, steps=20):
+        # ✅ Change 1 to args.batch so Q matches K/V batch sizes
+        tokens = torch.randint(0, cfg.vocab_size, (args.batch, prompt_len), device=device)
+        
+        # ✅ Keep your factory execution fix
+        cache = make_cache_fn(model, cfg, args.batch, device)()
+        
+        tok = prefill(model, tokens, cache).argmax(-1, keepdim=True)
+        times = []
+        for _ in range(steps):
+            s, e = torch.cuda.Event(True), torch.cuda.Event(True)
+            s.record()
+            logits = decode_one(model, tok, cache)
+            e.record()
+            torch.cuda.synchronize()
+            times.append(s.elapsed_time(e))
+            tok = logits.argmax(-1, keepdim=True)
+        return statistics.median(times)
+
+
+    short = decode_latency_at(8)
+    long_ = decode_latency_at(480)
+    print(f"decode @ cache~10 : {short:.3f} ms")
+    print(f"decode @ cache~490: {long_:.3f} ms")
+    print(f"ratio: {long_/short:.2f}x")
+
+    from torch.profiler import profile, ProfilerActivity
+
+    # build a long cache first
+    tokens = torch.randint(0, cfg.vocab_size, (32, 480), device=device)
+    cache = make_cache_fn(model, cfg, args.batch, device)()
+    tok = prefill(model, tokens, cache).argmax(-1, keepdim=True)
+
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+        for _ in range(10):
+            decode_one(model, tok, cache)
+            tok = decode_one(model, tok, cache).argmax(-1, keepdim=True)
+
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=15))
 
     if args.compare:
         other = "pytorch" if backend == "cuda" else "cuda"
@@ -173,3 +220,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

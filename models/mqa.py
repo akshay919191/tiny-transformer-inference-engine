@@ -540,15 +540,16 @@ class MQA_Cached(nn.Module):
 
         needs_mask = causal and (SQ == SK)
 
-        k = k.repeat_interleave(
-            self.num_groups,
-            dim=1,
-        )
-
-        v = v.repeat_interleave(
-            self.num_groups,
-            dim=1,
-        )
+        if self.backend == "pytorch":
+            out = F.scaled_dot_product_attention(
+                q, k, v,                     
+                is_causal=needs_mask,
+                enable_gqa=(self.num_kv_heads != self.num_heads),
+            )
+        else:
+            k = k.repeat_interleave(self.num_groups, dim=1)
+            v = v.repeat_interleave(self.num_groups, dim=1)
+            out = self._attention(q, k, v, needs_mask)
 
         out = self._attention(
             q,
