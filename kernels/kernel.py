@@ -54,16 +54,25 @@ class RMSNormFunction(torch.autograd.Function):
     def forward(ctx, x, gamma, eps=1e-4):
         orig_dtype = x.dtype
 
-        x_half = x.half()
-        gamma_half = gamma.half()
+        x_half = x.half().contiguous()
+        gamma_half = gamma.half().contiguous()
 
-        y = rmsnorm_cuda.forward(
+        result = rmsnorm_cuda.forward(
             x_half,
             gamma_half,
-            eps
+            eps,
         )
 
-        ctx.save_for_backward(x_half, gamma_half)
+        if isinstance(result, (list, tuple)):
+            y = result[0]
+        else:
+            y = result
+
+        ctx.save_for_backward(
+            x_half,
+            gamma_half,
+        )
+
         ctx.eps = eps
         ctx.orig_dtype = orig_dtype
 
@@ -72,19 +81,25 @@ class RMSNormFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         x_half, gamma_half = ctx.saved_tensors
-        eps = ctx.eps
-        orig_dtype = ctx.orig_dtype
 
-        grad_output_half = grad_output.half().contiguous()
+        grad_output_half = (
+            grad_output
+            .half()
+            .contiguous()
+        )
 
         dx, dgamma = rmsnorm_cuda.backward(
             grad_output_half,
             x_half,
             gamma_half,
-            eps
+            ctx.eps,
         )
 
-        return dx.to(orig_dtype), dgamma.to(orig_dtype), None
+        return (
+            dx.to(ctx.orig_dtype),
+            dgamma.to(ctx.orig_dtype),
+            None,
+        )
 
 
 class Softmax(torch.autograd.Function):

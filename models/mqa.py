@@ -294,43 +294,29 @@ class MQA_Cached(nn.Module):
             bias=self.bias,
         )
 
-        if self.backend == "cuda":
+        reference = torch.empty(
+            1,
+            dtype=torch.float16,
+            device="cuda",
+        )
 
-            reference = torch.empty(
-                1,
-                dtype=torch.float16,
-                device="cuda",
-            )
+        cos, sin = rope_cache(
+            reference,
+            config.max_seq_len,
+            self.rotary_dim,
+        )
 
-            cos, sin = rope_cache(
-                reference,
-                config.max_seq_len,
-                self.rotary_dim,
-            )
+        self.register_buffer(
+            "cos_cache",
+            cos.float().contiguous(),
+            persistent=False,
+        )
 
-            self.register_buffer(
-                "cos_cache",
-                cos.float().contiguous(),
-                persistent=False,
-            )
-
-            self.register_buffer(
-                "sin_cache",
-                sin.float().contiguous(),
-                persistent=False,
-            )
-
-            self.rope = None
-
-        else:
-
-            self.rope = RoPE(
-                self.rotary_dim,
-                config.max_seq_len,
-            )
-
-            self.cos_cache = None
-            self.sin_cache = None
+        self.register_buffer(
+            "sin_cache",
+            sin.float().contiguous(),
+            persistent=False,
+        )
 
     def _apply_rope(
         self,
@@ -361,15 +347,98 @@ class MQA_Cached(nn.Module):
 
             return q, k
 
-        else:
+        S_q = q.shape[-2]
+        S_k = k.shape[-2]
 
-            q, k = self.rope(
-                q,
-                k,
-                position_offset=position_offset,
-            )
+        half = self.rotary_dim // 2
 
-            return q, k
+        cos_q = self.cos_cache[
+            position_offset:position_offset + S_q,
+            :half,
+        ]
+
+        sin_q = self.sin_cache[
+            position_offset:position_offset + S_q,
+            :half,
+        ]
+
+        cos_q = torch.cat(
+            [cos_q, cos_q],
+            dim=-1,
+        )
+
+        sin_q = torch.cat(
+            [sin_q, sin_q],
+            dim=-1,
+        )
+
+        q_rot = q[..., :self.rotary_dim]
+        q_pass = q[..., self.rotary_dim:]
+
+        q1, q2 = q_rot.chunk(
+            2,
+            dim=-1,
+        )
+
+        q_rotated = torch.cat(
+            [-q2, q1],
+            dim=-1,
+        )
+
+        q_rot = (
+            q_rot * cos_q
+            + q_rotated * sin_q
+        )
+
+        q = torch.cat(
+            [q_rot, q_pass],
+            dim=-1,
+        )
+
+        cos_k = self.cos_cache[
+            position_offset:position_offset + S_k,
+            :half,
+        ]
+
+        sin_k = self.sin_cache[
+            position_offset:position_offset + S_k,
+            :half,
+        ]
+
+        cos_k = torch.cat(
+            [cos_k, cos_k],
+            dim=-1,
+        )
+
+        sin_k = torch.cat(
+            [sin_k, sin_k],
+            dim=-1,
+        )
+
+        k_rot = k[..., :self.rotary_dim]
+        k_pass = k[..., self.rotary_dim:]
+
+        k1, k2 = k_rot.chunk(
+            2,
+            dim=-1,
+        )
+
+        k_rotated = torch.cat(
+            [-k2, k1],
+            dim=-1,
+        )
+
+        k_rot = (
+            k_rot * cos_k
+            + k_rotated * sin_k
+        )
+
+        k = torch.cat(
+            [k_rot, k_pass],
+            dim=-1,
+        )
+
+        return q, k
 
     def _attention(
         self,
@@ -388,19 +457,17 @@ class MQA_Cached(nn.Module):
                 causal,
             )
 
-        else:
-
-            return F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                is_causal=causal,
-                dropout_p=(
-                    self.dropout
-                    if self.training
-                    else 0.0
-                ),
-            )
+        return F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            is_causal=causal,
+            dropout_p=(
+                self.dropout
+                if self.training
+                else 0.0
+            ),
+        )
 
     def forward(
         self,
@@ -425,21 +492,30 @@ class MQA_Cached(nn.Module):
             SQ,
             self.num_heads,
             self.headdim,
-        ).transpose(1, 2).contiguous()
+        ).transpose(
+            1,
+            2,
+        ).contiguous()
 
         k = k.view(
             B,
             SK_new,
             self.num_kv_heads,
             self.headdim,
-        ).transpose(1, 2).contiguous()
+        ).transpose(
+            1,
+            2,
+        ).contiguous()
 
         v = v.view(
             B,
             SK_new,
             self.num_kv_heads,
             self.headdim,
-        ).transpose(1, 2).contiguous()
+        ).transpose(
+            1,
+            2,
+        ).contiguous()
 
         position_offset = 0
 
