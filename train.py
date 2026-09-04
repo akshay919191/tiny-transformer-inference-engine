@@ -9,6 +9,7 @@ import torch.nn.functional as F
 
 from models.transformer_block import Transformer
 from models.model_config import ModelConfig
+from kernels.capability import resolve_backend
 
 def str2bool(v):
     return str(v).lower() in ("1", "true", "yes", "y")
@@ -37,8 +38,8 @@ def build_parser():
     p.add_argument("--weight_decay", type=float, default=0.1)
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--causal", type=str2bool, default=True)
-    p.add_argument("--backend", type=str, default="cuda", choices=["cuda", "pytorch"],
-                   help="attention kernel implementation")
+    p.add_argument("--backend", type=str, default="cuda", choices=["cuda", "pytorch", "auto"],
+                   help="attention kernel implementation ('auto' picks cuda if available+supported, else pytorch)")
     p.add_argument("--attn_type", type=str, default="mqa", choices=["mqa", "mha"],
                    help="multi-query vs multi-head attention")
 
@@ -75,7 +76,14 @@ def train(args):
 
     run_time.casual = args.causal
 
-    model = Transformer(run_time, attn_type=args.attn_type, backend=args.backend).to(device)
+    # --- explicit capability check, replaces implicit trust in args.backend ---
+    resolved_backend = resolve_backend(args.backend, run_time, args.attn_type)
+    # persist what was ACTUALLY used (not "auto") so the checkpoint's
+    # train_config always reflects a concrete, reproducible choice —
+    # generate.py later reads this back directly, no re-resolution needed
+    args.backend = resolved_backend
+
+    model = Transformer(run_time, attn_type=args.attn_type, backend=resolved_backend).to(device)
 
     for model in [model]:
         for module in model.modules():
@@ -90,6 +98,7 @@ def train(args):
 
     run_time.causal = args.causal
     print(f"[DEBUG] run_time.causal = {run_time.causal}")
+    print(f"[DEBUG] resolved backend = {resolved_backend}")
 
     for step in range(args.max_steps):
         input_ids = get_batch("train", run_time, device)

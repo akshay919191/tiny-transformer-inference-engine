@@ -7,6 +7,7 @@ from models.transformer_block import Transformer
 from models.model_config import ModelConfig
 from sampling import sample
 from kv_cache import KVCache_kv
+from kernels.capability import resolve_backend
 
 enc = tiktoken.get_encoding("gpt2")
 
@@ -25,10 +26,14 @@ def load_model(ckpt_path, device, attn_type=None, backend=None, causal=None):
     train_cfg = ckpt.get("train_config", {})
 
     resolved_attn_type = attn_type if attn_type is not None else train_cfg.get("attn_type", "mqa")
-    resolved_backend = backend if backend is not None else train_cfg.get("backend", "pytorch")
+    requested_backend = backend if backend is not None else train_cfg.get("backend", "pytorch")
+\
+    resolved_backend = resolve_backend(requested_backend, run_time, resolved_attn_type)
 
     if causal is not None:
         run_time.causal = causal
+
+    print(f"[DEBUG] Loading model with attn_type={resolved_attn_type}, backend={resolved_backend}, causal={run_time.causal}")
 
     model = Transformer(run_time, attn_type=resolved_attn_type, backend=resolved_backend).to(device)
     model.load_state_dict(ckpt["model"])
@@ -50,7 +55,7 @@ def decode_one(model, next_token, kv_cache):
 
 def generate(model, run_time, device, prompt, max_new_tokens=100, temperature=0.9, top_k=20, top_p=1.0):
     ids = enc.encode_ordinary(prompt)
-    ids = torch.tensor(ids, dtype=torch.long, device=device).unsqueeze(0)  
+    ids = torch.tensor(ids, dtype=torch.long, device=device).unsqueeze(0)
 
     kv_heads = getattr(run_time, "num_kv_heads", run_time.num_heads)
     head_dim = run_time.d_model // run_time.num_heads
@@ -61,19 +66,19 @@ def generate(model, run_time, device, prompt, max_new_tokens=100, temperature=0.
         num_heads=kv_heads,
         max_seq_len=run_time.max_seq_len,
         head_dim=head_dim,
-        dtype=torch.float32, ## custom kernel are fp16 based but internal conversion is used 
+        dtype=torch.float32,  # custom kernels are fp16 internally, but boundary stays fp32
         device=device,
     )
 
     logits = prefill(model, ids, kv_cache)
-    next_id = sample(logits, temperature=temperature, top_k=top_k, top_p=top_p)  
+    next_id = sample(logits, temperature=temperature, top_k=top_k, top_p=top_p)
 
     ids = torch.cat([ids, next_id], dim=1)
     yield enc.decode([next_id.item()])
 
     for _ in range(max_new_tokens - 1):
         logits = decode_one(model, next_id, kv_cache)
-        next_id = sample(logits, temperature=temperature, top_k=top_k, top_p=top_p)  
+        next_id = sample(logits, temperature=temperature, top_k=top_k, top_p=top_p)
 
         ids = torch.cat([ids, next_id], dim=1)
         yield enc.decode([next_id.item()])
@@ -89,7 +94,7 @@ if __name__ == "__main__":
     p.add_argument("--token", type=int, default=100)
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--attn_type", type=str, default=None, choices=[None, "mqa", "mha"])
-    p.add_argument("--backend", type=str, default=None, choices=[None, "cuda", "pytorch"])
+    p.add_argument("--backend", type=str, default=None, choices=[None, "cuda", "pytorch", "auto"])
     p.add_argument("--causal", type=str2bool, default=None)
     args = p.parse_args()
 
