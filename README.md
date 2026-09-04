@@ -10,7 +10,7 @@ Trained on TinyStories using the GPT-2 tokenizer.
 - Attention: MHA (multi-head) or MQA (multi-query, 1 shared KV head)
 - Two interchangeable backends:
   - `pytorch` — reference implementation
-  - `cuda` — Triton kernels
+  - `cuda` — cpp extension kernels
 - KV cache + streaming generation (in progress)
 
 | Config | Value |
