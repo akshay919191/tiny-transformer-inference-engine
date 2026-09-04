@@ -27,7 +27,7 @@ def make_cache_fn(model, cfg, batch_size, device):
 
     def make():
         return KVCache_kv(
-            num_layers=cfg.num_layers,          # <-- was missing
+            num_layers=cfg.num_layers,         
             batch_size=batch_size,
             max_seq_len=cfg.max_seq_len,
             num_heads=cfg.num_kv_heads,
@@ -89,7 +89,7 @@ def bench_decode(model, prompt_tokens, make_cache, num_tokens=128, warmup=10):
         logits = decode_one(model, tok, cache)
         e.record()
         tok = logits.argmax(-1, keepdim=True)  # greedy
-    torch.cuda.synchronize()  # one sync at the end, events measure each step
+    torch.cuda.synchronize() 
     return [s.elapsed_time(e) for s, e in events]
 
 
@@ -107,8 +107,6 @@ def run_one(label, model, cfg, args, device):
 
     tokens = torch.randint(0, cfg.vocab_size, (args.batch, args.prompt_len), device=device)
     make_cache = make_cache_fn(model, cfg, args.batch, device)
-
-    print(f"\n--- {label} ---")
 
     prefill_ms = bench_prefill(model, tokens, make_cache, args.warmup, args.iters)
     ttft = statistics.median(prefill_ms)
@@ -170,10 +168,8 @@ def main():
     run_one(f"backend={backend} attn={attn_type}", model, cfg, args, device)
 
     def decode_latency_at(prompt_len, steps=20):
-        # ✅ Change 1 to args.batch so Q matches K/V batch sizes
         tokens = torch.randint(0, cfg.vocab_size, (args.batch, prompt_len), device=device)
         
-        # ✅ Keep your factory execution fix
         cache = make_cache_fn(model, cfg, args.batch, device)()
         
         tok = prefill(model, tokens, cache).argmax(-1, keepdim=True)
