@@ -76,11 +76,7 @@ def train(args):
 
     run_time.casual = args.causal
 
-    # --- explicit capability check, replaces implicit trust in args.backend ---
     resolved_backend = resolve_backend(args.backend, run_time, args.attn_type)
-    # persist what was ACTUALLY used (not "auto") so the checkpoint's
-    # train_config always reflects a concrete, reproducible choice —
-    # generate.py later reads this back directly, no re-resolution needed
     args.backend = resolved_backend
 
     model = Transformer(run_time, attn_type=args.attn_type, backend=resolved_backend).to(device)
