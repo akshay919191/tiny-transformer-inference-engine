@@ -327,23 +327,25 @@ class MQA_Cached(nn.Module):
 
         if self.backend == "cuda":
 
-            q = Rope.apply(
-                q.contiguous(),
-                None,
-                self.cos_cache,
-                self.sin_cache,
-                self.rotary_dim,
-                position_offset,
-            )
+            with torch.profiler.record_function("rope_q"):
+                q = Rope.apply(
+                    q.contiguous(),
+                    None,
+                    self.cos_cache,
+                    self.sin_cache,
+                    self.rotary_dim,
+                    position_offset,
+                )
 
-            k = Rope.apply(
-                k.contiguous(),
-                None,
-                self.cos_cache,
-                self.sin_cache,
-                self.rotary_dim,
-                position_offset,
-            )
+            with torch.profiler.record_function("rope_k"):
+                k = Rope.apply(
+                    k.contiguous(),
+                    None,
+                    self.cos_cache,
+                    self.sin_cache,
+                    self.rotary_dim,
+                    position_offset,
+                )
 
             return q, k
 
@@ -352,91 +354,89 @@ class MQA_Cached(nn.Module):
 
         half = self.rotary_dim // 2
 
-        cos_q = self.cos_cache[
-            position_offset:position_offset + S_q,
-            :half,
-        ]
+        with torch.profiler.record_function("rope_q"):
 
-        sin_q = self.sin_cache[
-            position_offset:position_offset + S_q,
-            :half,
-        ]
+            cos_q = self.cos_cache[
+                position_offset:position_offset + S_q,
+                :half,
+            ]
 
-        cos_q = torch.cat(
-            [cos_q, cos_q],
-            dim=-1,
-        )
+            sin_q = self.sin_cache[
+                position_offset:position_offset + S_q,
+                :half,
+            ]
 
-        sin_q = torch.cat(
-            [sin_q, sin_q],
-            dim=-1,
-        )
+            cos_q = torch.cat(
+                [cos_q, cos_q],
+                dim=-1,
+            )
 
-        q_rot = q[..., :self.rotary_dim]
-        q_pass = q[..., self.rotary_dim:]
+            sin_q = torch.cat(
+                [sin_q, sin_q],
+                dim=-1,
+            )
 
-        q1, q2 = q_rot.chunk(
-            2,
-            dim=-1,
-        )
+            q_rot = q[..., :self.rotary_dim]
+            q_pass = q[..., self.rotary_dim:]
 
-        q_rotated = torch.cat(
-            [-q2, q1],
-            dim=-1,
-        )
+            q1, q2 = q_rot.chunk(2, dim=-1)
 
-        q_rot = (
-            q_rot * cos_q
-            + q_rotated * sin_q
-        )
+            q_rotated = torch.cat(
+                [-q2, q1],
+                dim=-1,
+            )
 
-        q = torch.cat(
-            [q_rot, q_pass],
-            dim=-1,
-        )
+            q_rot = (
+                q_rot * cos_q
+                + q_rotated * sin_q
+            )
 
-        cos_k = self.cos_cache[
-            position_offset:position_offset + S_k,
-            :half,
-        ]
+            q = torch.cat(
+                [q_rot, q_pass],
+                dim=-1,
+            )
 
-        sin_k = self.sin_cache[
-            position_offset:position_offset + S_k,
-            :half,
-        ]
+        with torch.profiler.record_function("rope_k"):
 
-        cos_k = torch.cat(
-            [cos_k, cos_k],
-            dim=-1,
-        )
+            cos_k = self.cos_cache[
+                position_offset:position_offset + S_k,
+                :half,
+            ]
 
-        sin_k = torch.cat(
-            [sin_k, sin_k],
-            dim=-1,
-        )
+            sin_k = self.sin_cache[
+                position_offset:position_offset + S_k,
+                :half,
+            ]
 
-        k_rot = k[..., :self.rotary_dim]
-        k_pass = k[..., self.rotary_dim:]
+            cos_k = torch.cat(
+                [cos_k, cos_k],
+                dim=-1,
+            )
 
-        k1, k2 = k_rot.chunk(
-            2,
-            dim=-1,
-        )
+            sin_k = torch.cat(
+                [sin_k, sin_k],
+                dim=-1,
+            )
 
-        k_rotated = torch.cat(
-            [-k2, k1],
-            dim=-1,
-        )
+            k_rot = k[..., :self.rotary_dim]
+            k_pass = k[..., self.rotary_dim:]
 
-        k_rot = (
-            k_rot * cos_k
-            + k_rotated * sin_k
-        )
+            k1, k2 = k_rot.chunk(2, dim=-1)
 
-        k = torch.cat(
-            [k_rot, k_pass],
-            dim=-1,
-        )
+            k_rotated = torch.cat(
+                [-k2, k1],
+                dim=-1,
+            )
+
+            k_rot = (
+                k_rot * cos_k
+                + k_rotated * sin_k
+            )
+
+            k = torch.cat(
+                [k_rot, k_pass],
+                dim=-1,
+            )
 
         return q, k
 
@@ -483,93 +483,104 @@ class MQA_Cached(nn.Module):
         B, SQ, _ = query.shape
         SK_new = key.shape[1]
 
-        q = self.q_proj(query)
-        k = self.k_proj(key)
-        v = self.v_proj(value)
+        with torch.profiler.record_function("attention_qkv_projection"):
+            q = self.q_proj(query)
+            k = self.k_proj(key)
+            v = self.v_proj(value)
 
-        q = q.view(
-            B,
-            SQ,
-            self.num_heads,
-            self.headdim,
-        ).transpose(
-            1,
-            2,
-        ).contiguous()
+        with torch.profiler.record_function("attention_reshape"):
+            q = q.view(
+                B,
+                SQ,
+                self.num_heads,
+                self.headdim,
+            ).transpose(1, 2).contiguous()
 
-        k = k.view(
-            B,
-            SK_new,
-            self.num_kv_heads,
-            self.headdim,
-        ).transpose(
-            1,
-            2,
-        ).contiguous()
+            k = k.view(
+                B,
+                SK_new,
+                self.num_kv_heads,
+                self.headdim,
+            ).transpose(1, 2).contiguous()
 
-        v = v.view(
-            B,
-            SK_new,
-            self.num_kv_heads,
-            self.headdim,
-        ).transpose(
-            1,
-            2,
-        ).contiguous()
+            v = v.view(
+                B,
+                SK_new,
+                self.num_kv_heads,
+                self.headdim,
+            ).transpose(1, 2).contiguous()
 
         position_offset = 0
 
         if kv_cache is not None:
             position_offset = kv_cache.length
 
-        q, k = self._apply_rope(
-            q,
-            k,
-            position_offset,
-        )
+        with torch.profiler.record_function("attention_rope"):
+            q, k = self._apply_rope(
+                q,
+                k,
+                position_offset,
+            )
 
         if kv_cache is not None:
-
-            k, v = kv_cache.update(
-                layer_idx,
-                k,
-                v,
-            )
+            with torch.profiler.record_function("attention_kv_cache"):
+                k, v = kv_cache.update(
+                    layer_idx,
+                    k,
+                    v,
+                )
 
         SK = k.shape[2]
 
         needs_mask = causal and (SQ == SK)
 
-        if self.backend == "pytorch":
-            out = F.scaled_dot_product_attention(
-                q, k, v,                     
-                is_causal=needs_mask,
-                enable_gqa=(self.num_kv_heads != self.num_heads),
+        with torch.profiler.record_function("attention_compute"):
+
+            if self.backend == "pytorch":
+
+                out = F.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    is_causal=needs_mask,
+                    enable_gqa=(
+                        self.num_kv_heads != self.num_heads
+                    ),
+                )
+
+            else:
+
+                k = k.repeat_interleave(
+                    self.num_groups,
+                    dim=1,
+                )
+
+                v = v.repeat_interleave(
+                    self.num_groups,
+                    dim=1,
+                )
+
+                out = self._attention(
+                    q,
+                    k,
+                    v,
+                    needs_mask,
+                )
+
+        with torch.profiler.record_function("attention_output_projection"):
+
+            out = (
+                out
+                .transpose(1, 2)
+                .contiguous()
+                .view(
+                    B,
+                    SQ,
+                    self.d_model,
+                )
             )
-        else:
-            k = k.repeat_interleave(self.num_groups, dim=1)
-            v = v.repeat_interleave(self.num_groups, dim=1)
-            out = self._attention(q, k, v, needs_mask)
 
-        out = self._attention(
-            q,
-            k,
-            v,
-            needs_mask,
-        )
-
-        out = (
-            out
-            .transpose(1, 2)
-            .contiguous()
-            .view(
-                B,
-                SQ,
-                self.d_model,
-            )
-        )
-
-        out = self.out(out)
+            out = self.out(out)
 
         if return_attn:
             return out, None

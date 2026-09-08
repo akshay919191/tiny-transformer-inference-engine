@@ -31,11 +31,17 @@ class SwiGLU(nn.Module):
         )
 
     def forward(self, x):
-        gate = self.gate_proj(x)
-        up = self.up_proj(x)
 
-        x = F.silu(gate) * up
+        with torch.profiler.record_function("mlp_gate_proj"):
+            gate = self.gate_proj(x)
 
-        x = self.down_proj(x)
+        with torch.profiler.record_function("mlp_up_proj"):
+            up = self.up_proj(x)
+
+        with torch.profiler.record_function("mlp_silu_mul"):
+            x = F.silu(gate) * up
+
+        with torch.profiler.record_function("mlp_down_proj"):
+            x = self.down_proj(x)
 
         return x

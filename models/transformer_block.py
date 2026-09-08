@@ -173,29 +173,34 @@ class TransformerBlock(nn.Module):
 
         residual = x
 
-        x = self.attn_norm(x)
+        with torch.profiler.record_function("attn_norm"):
+            x = self.attn_norm(x)
 
-        x = self.attn(
-            x,
-            x,
-            x,
-            kv_cache=kv_cache,
-            layer_idx=self.layer_idx,
-            causal=True,
-        )
+        with torch.profiler.record_function("attention"):
+            x = self.attn(
+                x,
+                x,
+                x,
+                kv_cache=kv_cache,
+                layer_idx=self.layer_idx,
+                causal=True,
+            )
 
-        x = x + residual
+        with torch.profiler.record_function("attn_residual"):
+            x = x + residual
 
         residual = x
 
-        x = self.mlp_norm(x)
+        with torch.profiler.record_function("mlp_norm"):
+            x = self.mlp_norm(x)
 
-        x = self.mlp(x)
+        with torch.profiler.record_function("mlp"):
+            x = self.mlp(x)
 
-        x = x + residual
+        with torch.profiler.record_function("mlp_residual"):
+            x = x + residual
 
         return x
-
 
 class Transformer(nn.Module):
 
@@ -227,21 +232,28 @@ class Transformer(nn.Module):
 
     def forward(self, input_ids, kv_cache=None):
 
-        x = self.embedding(input_ids)
+        with torch.profiler.record_function("embedding"):
+            x = self.embedding(input_ids)
 
-        for layer in self.layers:
+        for i, layer in enumerate(self.layers):
 
-            x = layer(
-                x,
-                kv_cache=kv_cache,
-            )
+            with torch.profiler.record_function(
+                f"transformer_layer_{i}"
+            ):
+                x = layer(
+                    x,
+                    kv_cache=kv_cache,
+                )
 
         if kv_cache is not None:
-            kv_cache.advance(input_ids.shape[1])
+            with torch.profiler.record_function("kv_cache_advance"):
+                kv_cache.advance(input_ids.shape[1])
 
-        x = self.final_norm(x)
+        with torch.profiler.record_function("final_norm"):
+            x = self.final_norm(x)
 
-        logits = self.lm_head(x)
+        with torch.profiler.record_function("lm_head"):
+            logits = self.lm_head(x)
 
         return logits
 
