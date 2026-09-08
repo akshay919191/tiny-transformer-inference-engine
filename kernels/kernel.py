@@ -131,9 +131,14 @@ class Softmax(torch.autograd.Function):
 class TopK:
     def __call__(self, x, k):
         orig_dtype = x.dtype
-        result = topk_cuda.topk(x.half(), k)
-        return result.to(orig_dtype) if torch.is_tensor(result) else result
+        x_f32 = x.float()
 
+        result = topk_cuda.topk(x_f32, k)
+
+        if isinstance(result, (list, tuple)):
+            result = result[0]
+
+        return result.to(orig_dtype) if torch.is_tensor(result) else result
 
 class FlashAttn(torch.autograd.Function):
 
@@ -185,13 +190,6 @@ class FlashAttn(torch.autograd.Function):
         return dq.to(orig_dtype), dk.to(orig_dtype), dv.to(orig_dtype), None
 
 
-### rope has diff story we build static cache
-
-## cache
-# NOTE: cos/sin caches are deliberately kept in fp32 (not cast here) —
-# they're built once and reused every forward pass, not part of the
-# optimizer's parameter set, so keeping them fp32 costs nothing and
-# avoids repeated precision loss across many reuses.
 
 def rope_cache(reference, max_seq_len, rotary_dim):
     out = rope_cuda.build_cache(
