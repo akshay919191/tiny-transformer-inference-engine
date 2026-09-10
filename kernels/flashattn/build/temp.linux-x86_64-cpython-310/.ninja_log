@@ -1,3 +1,3 @@
 # ninja log v7
-0	10835	1784522967836177042	/home/toxiccccterabaap/Downloads/flash-attention-scratch/src/masked/build/temp.linux-x86_64-cpython-310/bindings.o	79984f6763ca1c0f
-1	54350	1784522967837177464	/home/toxiccccterabaap/Downloads/flash-attention-scratch/src/masked/build/temp.linux-x86_64-cpython-310/flashattn.o	43dfa668e215f252
+0	11529	1789036845843946990	/home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/flashattn/build/temp.linux-x86_64-cpython-310/bindings.o	84006790f29ff3f2
+0	56497	1789036845843946990	/home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/flashattn/build/temp.linux-x86_64-cpython-310/flashattn.o	627d7f2600bebd18

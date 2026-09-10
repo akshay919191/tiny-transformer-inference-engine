@@ -26,8 +26,8 @@ rule cuda_compile
 
 
 
-build /home/toxiccccterabaap/Downloads/flash-attention-scratch/src/masked/build/temp.linux-x86_64-cpython-310/bindings.o: compile /home/toxiccccterabaap/Downloads/flash-attention-scratch/src/masked/bindings.cpp
-build /home/toxiccccterabaap/Downloads/flash-attention-scratch/src/masked/build/temp.linux-x86_64-cpython-310/flashattn.o: cuda_compile /home/toxiccccterabaap/Downloads/flash-attention-scratch/src/masked/flashattn.cu
+build /home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/flashattn/build/temp.linux-x86_64-cpython-310/bindings.o: compile /home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/flashattn/bindings.cpp
+build /home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/flashattn/build/temp.linux-x86_64-cpython-310/flashattn.o: cuda_compile /home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/flashattn/flashattn.cu
 
 
 
