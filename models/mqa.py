@@ -164,6 +164,9 @@ class MQA(nn.Module):
                     if self.training
                     else 0.0
                 ),
+                enable_gqa=(
+                    self.num_kv_heads != self.num_heads
+                ),
             )
 
     def forward(
@@ -208,16 +211,6 @@ class MQA(nn.Module):
             q,
             k,
             position_offset,
-        )
-
-        k = k.repeat_interleave(
-            self.num_groups,
-            dim=1,
-        )
-
-        v = v.repeat_interleave(
-            self.num_groups,
-            dim=1,
         )
 
         needs_mask = causal and (SQ == SK)
@@ -467,6 +460,9 @@ class MQA_Cached(nn.Module):
                 if self.training
                 else 0.0
             ),
+            enable_gqa=(
+                self.num_kv_heads != self.num_heads
+            ),
         )
 
     def forward(
@@ -536,36 +532,12 @@ class MQA_Cached(nn.Module):
 
         with torch.profiler.record_function("attention_compute"):
 
-            if self.backend == "pytorch":
-
-                out = F.scaled_dot_product_attention(
-                    q,
-                    k,
-                    v,
-                    is_causal=needs_mask,
-                    enable_gqa=(
-                        self.num_kv_heads != self.num_heads
-                    ),
-                )
-
-            else:
-
-                k = k.repeat_interleave(
-                    self.num_groups,
-                    dim=1,
-                )
-
-                v = v.repeat_interleave(
-                    self.num_groups,
-                    dim=1,
-                )
-
-                out = self._attention(
-                    q,
-                    k,
-                    v,
-                    needs_mask,
-                )
+            out = self._attention(
+                q,
+                k,
+                v,
+                needs_mask,
+            )
 
         with torch.profiler.record_function("attention_output_projection"):
 
