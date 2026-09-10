@@ -35,6 +35,22 @@ device = "cuda"
 torch.manual_seed(42)
 
 
+# Which backend to actually validate. "cuda" is what exercises
+# FlashAttn.apply / the kernel's GQA-MQA head-grouping and the
+# dK/dV atomic-accumulation path — "pytorch" only checks the
+# reference implementation against itself and proves nothing
+# about the kernel.
+BACKEND = "cuda"
+
+# fp16 is required by the cuda RoPE/attention kernels; the pytorch
+# backend can run in fp32 for a tighter numerical baseline.
+DTYPE = torch.float16 if BACKEND == "cuda" else torch.float32
+
+# fp16 accumulation needs looser tolerances than fp32.
+ATOL = 1e-2 if BACKEND == "cuda" else 1e-5
+RTOL = 1e-2 if BACKEND == "cuda" else 1e-4
+
+
 BATCHES = [1, 2, 4]
 
 SEQLENS = [128, 256]
@@ -70,18 +86,24 @@ def test_one(
         d_model=d_model,
         num_heads=num_heads,
         num_kv_heads=num_kv_heads,
+        dtype=DTYPE,
     )
 
-
+    # Both models must use the SAME backend so the comparison actually
+    # validates that backend's cache-vs-full-sequence equivalence.
     reference = MQA(
         config,
-        backend="pytorch",
+        backend=BACKEND,
     ).cuda()
 
     cached = MQA_Cached(
         config,
-        backend="pytorch",
+        backend=BACKEND,
     ).cuda()
+
+    if DTYPE == torch.float16:
+        reference = reference.half()
+        cached = cached.half()
 
     reference.eval()
     cached.eval()
@@ -134,7 +156,7 @@ def test_one(
         device=device,
     )
 
-    cached_prompt = cached(
+    _ = cached(
         prompt,
         prompt,
         prompt,
@@ -157,17 +179,18 @@ def test_one(
     cache.advance(1)
 
     error = (
-        cached_last - reference_last
+        cached_last.float() - reference_last.float()
     ).abs().max().item()
 
     passed = torch.allclose(
-        cached_last,
-        reference_last,
-        atol=1e-5,
-        rtol=1e-4,
+        cached_last.float(),
+        reference_last.float(),
+        atol=ATOL,
+        rtol=RTOL,
     )
 
     name = (
+        f"backend={BACKEND} "
         f"B={batch} "
         f"S={seq_len} "
         f"D={d_model} "
@@ -240,7 +263,8 @@ def main():
     print()
     print("=" * 70)
     print(
-        f"RESULT: {passed}/{total} tests passed"
+        f"RESULT: {passed}/{total} tests passed "
+        f"(backend={BACKEND})"
     )
     print("=" * 70)
     print()
