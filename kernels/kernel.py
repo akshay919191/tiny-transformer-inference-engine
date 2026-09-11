@@ -32,20 +32,7 @@ import rope_cuda
 import flash_acc_reg_ext as flashattn
 import topk_cuda
 
-"""
-classes for each kernel so it can work with autograd.
 
-IMPORTANT: these kernels require fp16 inputs internally. Rather than
-requiring every caller to remember to cast, each Function casts to fp16
-right before calling into CUDA, and casts results back to the ORIGINAL
-input dtype before returning. This means:
-  - callers can pass normal fp32 tensors (e.g. straight from an fp32
-    model/optimizer) without thinking about dtype at all
-  - the model's actual parameters (gamma, etc.) stay fp32 for the
-    optimizer, avoiding the eps-underflow NaN issue
-  - gradients returned to autograd match the dtype of what was passed in,
-    which autograd requires
-"""
 
 
 class RMSNormFunction(torch.autograd.Function):
@@ -107,7 +94,7 @@ class Softmax(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x):
         orig_dtype = x.dtype
-        x_half = x.half()
+        x_half = x.half().contiguous()
 
         y = softmax_cuda.forward(x_half)
 
@@ -131,6 +118,7 @@ class Softmax(torch.autograd.Function):
 class TopK:
     def __call__(self, x, k):
         orig_dtype = x.dtype
+
         x_f32 = x.float()
 
         result = topk_cuda.topk(x_f32, k)
@@ -140,6 +128,7 @@ class TopK:
 
         return result.to(orig_dtype) if torch.is_tensor(result) else result
 
+
 class FlashAttn(torch.autograd.Function):
 
     @staticmethod
@@ -148,9 +137,11 @@ class FlashAttn(torch.autograd.Function):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        causal: bool
+        causal: bool,
+        output_dtype: torch.dtype = None,
     ):
-        orig_dtype = q.dtype
+
+        orig_dtype = output_dtype if output_dtype is not None else q.dtype
 
         q_half = q.half().contiguous()
         k_half = k.half().contiguous()
@@ -167,13 +158,16 @@ class FlashAttn(torch.autograd.Function):
         ctx.causal = causal
         ctx.orig_dtype = orig_dtype
 
+        ctx.q_in_dtype = q.dtype
+        ctx.k_in_dtype = k.dtype
+        ctx.v_in_dtype = v.dtype
+
         return out.to(orig_dtype)
 
     @staticmethod
     def backward(ctx, grad_output):
         q_half, k_half, v_half, out, L = ctx.saved_tensors
         causal = ctx.causal
-        orig_dtype = ctx.orig_dtype
 
         grad_output_half = grad_output.half().contiguous()
 
@@ -187,8 +181,13 @@ class FlashAttn(torch.autograd.Function):
             causal
         )
 
-        return dq.to(orig_dtype), dk.to(orig_dtype), dv.to(orig_dtype), None
-
+        return (
+            dq.to(ctx.q_in_dtype),
+            dk.to(ctx.k_in_dtype),
+            dv.to(ctx.v_in_dtype),
+            None,
+            None,
+        )
 
 
 def rope_cache(reference, max_seq_len, rotary_dim):
@@ -222,12 +221,11 @@ class Rope(torch.autograd.Function):
         sin,
         rotary_dim,
         position_offset,
+        output_dtype: torch.dtype = None,
     ):
         orig_dtype = x.dtype
 
         x_half = x.half()
-        # rope_cuda requires cos/sin as float32 specifically (mixed-precision
-        # kernel signature) — do NOT cast these to half, unlike x.
         cos_f32 = cos.float().contiguous()
         sin_f32 = sin.float().contiguous()
 
@@ -248,9 +246,11 @@ class Rope(torch.autograd.Function):
         ctx.has_position_ids = position_ids is not None
         ctx.rotary_dim = rotary_dim
         ctx.position_offset = position_offset
+
         ctx.orig_dtype = orig_dtype
 
-        return result.to(orig_dtype)
+        out_dtype = output_dtype if output_dtype is not None else orig_dtype
+        return result.to(out_dtype)
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -280,4 +280,5 @@ class Rope(torch.autograd.Function):
             None,
             None,
             None,
+            None,  
         )

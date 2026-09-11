@@ -14,6 +14,25 @@ from kernels.capability import resolve_backend
 def str2bool(v):
     return str(v).lower() in ("1", "true", "yes", "y")
 
+
+DTYPE_MAP = {
+    "float32": torch.float32,
+    "fp32": torch.float32,
+    "float16": torch.float16,
+    "fp16": torch.float16,
+    "bfloat16": torch.bfloat16,
+    "bf16": torch.bfloat16,
+}
+
+
+def parse_dtype(v):
+    if isinstance(v, torch.dtype):
+        return v
+    if v in DTYPE_MAP:
+        return DTYPE_MAP[v]
+    raise argparse.ArgumentTypeError(f"unknown dtype: {v!r}")
+
+
 TYPE_MAP = {"int": int, "float": float, "bool": str2bool, "str": str}
 
 
@@ -21,6 +40,15 @@ def add_model_args(parser):
     """Auto-create one CLI flag per ModelConfig field, e.g. --num_layers 12"""
     group = parser.add_argument_group("model config")
     for f in fields(ModelConfig):
+        if f.name == "dtype":
+            group.add_argument(
+                f"--{f.name}",
+                type=parse_dtype,
+                default=f.default,
+                help="default: %(default)s",
+            )
+            continue
+
         ftype = TYPE_MAP.get(f.type if isinstance(f.type, str) else f.type.__name__, str)
         group.add_argument(
             f"--{f.name}",
@@ -37,13 +65,14 @@ def build_parser():
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=0.1)
     p.add_argument("--device", type=str, default="cuda")
-    p.add_argument("--causal", type=str2bool, default=True)
+    p.add_argument("--eval_interval", type=int, default=100,
+                   help="run validation every N steps")
     p.add_argument("--backend", type=str, default="cuda", choices=["cuda", "pytorch", "auto"],
                    help="attention kernel implementation ('auto' picks cuda if available+supported, else pytorch)")
     p.add_argument("--attn_type", type=str, default="mqa", choices=["mqa", "mha"],
                    help="multi-query vs multi-head attention")
 
-    add_model_args(p)   
+    add_model_args(p)
     return p
 
 
@@ -74,27 +103,25 @@ def train(args):
 
     run_time = ModelConfig(**{f.name: getattr(args, f.name) for f in fields(ModelConfig)})
 
-    run_time.casual = args.causal
-
     resolved_backend = resolve_backend(args.backend, run_time, args.attn_type)
     args.backend = resolved_backend
 
     model = Transformer(run_time, attn_type=args.attn_type, backend=resolved_backend).to(device)
 
-    for model in [model]:
-        for module in model.modules():
-            if hasattr(module, "cos_cache") and module.cos_cache is not None:
-                module.cos_cache = module.cos_cache.float()
+    for module in model.modules():
+        if hasattr(module, "cos_cache") and module.cos_cache is not None:
+            module.cos_cache = module.cos_cache.float()
 
-            if hasattr(module, "sin_cache") and module.sin_cache is not None:
-                 module.sin_cache = module.sin_cache.float()
+        if hasattr(module, "sin_cache") and module.sin_cache is not None:
+            module.sin_cache = module.sin_cache.float()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     model.train()
 
-    run_time.causal = args.causal
     print(f"[DEBUG] run_time.causal = {run_time.causal}")
     print(f"[DEBUG] resolved backend = {resolved_backend}")
+
+    val_loss = None
 
     for step in range(args.max_steps):
         input_ids = get_batch("train", run_time, device)
@@ -107,15 +134,15 @@ def train(args):
         loss.backward()
         optimizer.step()
 
-        model.eval()
-        with torch.no_grad():
-            val_ids = get_batch("val", run_time, device)
-            vx, vy = val_ids[:, :-1], val_ids[:, 1:]
-            val_logits = model(vx)
-            val_loss = F.cross_entropy(val_logits.reshape(-1, val_logits.size(-1)), vy.reshape(-1))
-        model.train()
+        if step % args.eval_interval == 0:
+            model.eval()
+            with torch.no_grad():
+                val_ids = get_batch("val", run_time, device)
+                vx, vy = val_ids[:, :-1], val_ids[:, 1:]
+                val_logits = model(vx)
+                val_loss = F.cross_entropy(val_logits.reshape(-1, val_logits.size(-1)), vy.reshape(-1))
+            model.train()
 
-        if step % 100 == 0:
             print(f"step {step} | train loss {loss.item():.4f} | val loss {val_loss.item():.4f}")
 
         if step % 1000 == 0:
@@ -124,6 +151,6 @@ def train(args):
     save_checkpoint("checkpoints/ckpt_final.pt", model, optimizer, args.max_steps, run_time, args)
 
 
-args = build_parser().parse_args()
 if __name__ == "__main__":
+    args = build_parser().parse_args()
     train(args)

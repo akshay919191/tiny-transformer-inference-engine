@@ -112,6 +112,7 @@ class MQA(nn.Module):
                 self.sin_cache,
                 self.rotary_dim,
                 position_offset,
+                torch.float16,
             )
 
             k = Rope.apply(
@@ -121,6 +122,7 @@ class MQA(nn.Module):
                 self.sin_cache,
                 self.rotary_dim,
                 position_offset,
+                torch.float16,
             )
 
             return q, k
@@ -150,6 +152,7 @@ class MQA(nn.Module):
                 k.contiguous(),
                 v.contiguous(),
                 causal,
+                v.dtype,
             )
 
         else:
@@ -233,7 +236,7 @@ class MQA(nn.Module):
             )
         )
 
-        out = self.out(out)
+        out = self.out(out.to(self.out.weight.dtype))
 
         if return_attn:
             return out, None
@@ -262,6 +265,12 @@ class MQA_Cached(nn.Module):
         self.headdim = self.d_model // self.num_heads
         self.num_groups = self.num_heads // self.num_kv_heads
         self.rotary_dim = self.headdim
+
+        assert torch.cuda.is_available(), (
+            "MQA_Cached requires a CUDA device to build the RoPE cache, "
+            "even when backend='pytorch' (only the attention/rope compute "
+            "differs by backend, not the cache construction)."
+        )
 
         self.q_proj = nn.Linear(
             self.d_model,
@@ -321,6 +330,7 @@ class MQA_Cached(nn.Module):
         if self.backend == "cuda":
 
             with torch.profiler.record_function("rope_q"):
+
                 q = Rope.apply(
                     q.contiguous(),
                     None,
@@ -328,9 +338,11 @@ class MQA_Cached(nn.Module):
                     self.sin_cache,
                     self.rotary_dim,
                     position_offset,
+                    torch.float16,
                 )
 
             with torch.profiler.record_function("rope_k"):
+
                 k = Rope.apply(
                     k.contiguous(),
                     None,
@@ -338,6 +350,7 @@ class MQA_Cached(nn.Module):
                     self.sin_cache,
                     self.rotary_dim,
                     position_offset,
+                    torch.float16,
                 )
 
             return q, k
@@ -448,6 +461,7 @@ class MQA_Cached(nn.Module):
                 k.contiguous(),
                 v.contiguous(),
                 causal,
+                v.dtype,
             )
 
         return F.scaled_dot_product_attention(
@@ -479,12 +493,18 @@ class MQA_Cached(nn.Module):
         B, SQ, _ = query.shape
         SK_new = key.shape[1]
 
-        with torch.profiler.record_function("attention_qkv_projection"):
+        with torch.profiler.record_function(
+            "attention_qkv_projection"
+        ):
+
             q = self.q_proj(query)
             k = self.k_proj(key)
             v = self.v_proj(value)
 
-        with torch.profiler.record_function("attention_reshape"):
+        with torch.profiler.record_function(
+            "attention_reshape"
+        ):
+
             q = q.view(
                 B,
                 SQ,
@@ -511,7 +531,10 @@ class MQA_Cached(nn.Module):
         if kv_cache is not None:
             position_offset = kv_cache.length
 
-        with torch.profiler.record_function("attention_rope"):
+        with torch.profiler.record_function(
+            "attention_rope"
+        ):
+
             q, k = self._apply_rope(
                 q,
                 k,
@@ -519,7 +542,11 @@ class MQA_Cached(nn.Module):
             )
 
         if kv_cache is not None:
-            with torch.profiler.record_function("attention_kv_cache"):
+
+            with torch.profiler.record_function(
+                "attention_kv_cache"
+            ):
+
                 k, v = kv_cache.update(
                     layer_idx,
                     k,
@@ -530,7 +557,9 @@ class MQA_Cached(nn.Module):
 
         needs_mask = causal and (SQ == SK)
 
-        with torch.profiler.record_function("attention_compute"):
+        with torch.profiler.record_function(
+            "attention_compute"
+        ):
 
             out = self._attention(
                 q,
@@ -539,7 +568,9 @@ class MQA_Cached(nn.Module):
                 needs_mask,
             )
 
-        with torch.profiler.record_function("attention_output_projection"):
+        with torch.profiler.record_function(
+            "attention_output_projection"
+        ):
 
             out = (
                 out
@@ -552,7 +583,7 @@ class MQA_Cached(nn.Module):
                 )
             )
 
-            out = self.out(out)
+            out = self.out(out.to(self.out.weight.dtype))
 
         if return_attn:
             return out, None

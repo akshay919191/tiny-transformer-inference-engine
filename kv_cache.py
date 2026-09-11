@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 
+
 class KVCache(nn.Module):
 
     def __init__(
@@ -20,13 +21,15 @@ class KVCache(nn.Module):
         self.max_seq_len = max_seq_len
         self.length = 0
 
+        self.dtype = torch.float16
+
         self.kcache = [
             torch.empty(
                 batch_size,
                 num_heads,
                 max_seq_len,
                 head_dim,
-                dtype=dtype,
+                dtype=self.dtype,
                 device=device,
             )
             for _ in range(num_layers)
@@ -38,7 +41,7 @@ class KVCache(nn.Module):
                 num_heads,
                 max_seq_len,
                 head_dim,
-                dtype=dtype,
+                dtype=self.dtype,
                 device=device,
             )
             for _ in range(num_layers)
@@ -57,13 +60,16 @@ class KVCache(nn.Module):
                 f"{end} > {self.max_seq_len}"
             )
 
+        k_half = k.half() if k.dtype != self.dtype else k
+        v_half = v.half() if v.dtype != self.dtype else v
+
         self.kcache[layer_idx][
             :, :, start:end, :
-        ] = k
+        ] = k_half
 
         self.vcache[layer_idx][
             :, :, start:end, :
-        ] = v
+        ] = v_half
 
         return (
             self.kcache[layer_idx][:, :, :end, :],
@@ -115,13 +121,15 @@ class KVCache_kv(nn.Module):
         self.max_seq_len = max_seq_len
         self.length = 0
 
+        self.dtype = torch.float16
+
         self.kcache = [
             torch.empty(
                 batch_size,
                 num_heads,
                 max_seq_len,
                 head_dim,
-                dtype=dtype,
+                dtype=self.dtype,
                 device=device,
             )
             for _ in range(num_layers)
@@ -133,7 +141,7 @@ class KVCache_kv(nn.Module):
                 num_heads,
                 max_seq_len,
                 head_dim,
-                dtype=dtype,
+                dtype=self.dtype,
                 device=device,
             )
             for _ in range(num_layers)
@@ -174,16 +182,16 @@ class KVCache_kv(nn.Module):
                 f"expected {expected_shape[3]}"
             )
 
-        if k.dtype != self.kcache[layer_idx].dtype:
-            raise ValueError(
-                f"Dtype mismatch: got {k.dtype}, "
-                f"expected {self.kcache[layer_idx].dtype}"
-            )
-
         if k.device != self.kcache[layer_idx].device:
             raise ValueError(
                 f"Device mismatch: got {k.device}, "
                 f"expected {self.kcache[layer_idx].device}"
+            )
+
+        if v.device != self.vcache[layer_idx].device:
+            raise ValueError(
+                f"Device mismatch: got {v.device}, "
+                f"expected {self.vcache[layer_idx].device}"
             )
 
         if v.shape != k.shape:
@@ -202,13 +210,16 @@ class KVCache_kv(nn.Module):
 
         with torch.profiler.record_function("kv_cache_write"):
 
+            k_half = k.half() if k.dtype != self.dtype else k
+            v_half = v.half() if v.dtype != self.dtype else v
+
             self.kcache[layer_idx][
                 :, :, start:end, :
-            ] = k
+            ] = k_half
 
             self.vcache[layer_idx][
                 :, :, start:end, :
-            ] = v
+            ] = v_half
 
         with torch.profiler.record_function("kv_cache_view"):
 
