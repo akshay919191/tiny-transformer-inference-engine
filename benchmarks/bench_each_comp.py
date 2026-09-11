@@ -48,7 +48,7 @@ def do(model, tokens):
         model(tokens)
         torch.cuda.synchronize()
 
-    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=-1))
 
 
 @torch.no_grad()
@@ -211,7 +211,7 @@ def main():
             tok = decode_one(model, tok, cache).argmax(-1, keepdim=True)
         torch.cuda.synchronize()
 
-    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=15))
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=-1))
 
     if args.compare:
         other = "pytorch" if backend == "cuda" else "cuda"
