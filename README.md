@@ -6,21 +6,22 @@ Trained on TinyStories using the GPT-2 tokenizer.
 
 ## Architecture
 
-- Decoder-only transformer with RoPE, RMSNorm, and SwiGLU MLPs
-- Attention: MHA (multi-head) or MQA (multi-query, 1 shared KV head)
-- Two interchangeable backends:
-  - `pytorch` — reference implementation
-  - `cuda` — cpp extension kernels
-- KV cache + streaming generation (in progress)
+* Decoder-only transformer with RoPE, RMSNorm, and SwiGLU MLPs
+* Attention: MHA (multi-head) or MQA (multi-query, 1 shared KV head)
+* Two interchangeable backends:
 
-| Config | Value |
-|---|---:|
-| `vocab_size` | 50257 (GPT-2) |
-| `d_model` | 256 |
-| `num_layers` | 8 |
-| `num_heads` | 8 |
-| `num_kv_heads` | 1 (MQA) |
-| `max_seq_len` | 512 |
+  * `pytorch` — reference implementation
+  * `cuda` — cpp extension kernels
+* KV cache + streaming generation
+
+| Config         |         Value |
+| -------------- | ------------: |
+| `vocab_size`   | 50257 (GPT-2) |
+| `d_model`      |           256 |
+| `num_layers`   |             8 |
+| `num_heads`    |             8 |
+| `num_kv_heads` |       1 (MQA) |
+| `max_seq_len`  |           512 |
 
 ## Setup
 
@@ -44,14 +45,14 @@ data/
 python train.py --max_steps 5000 --lr 3e-4 --backend cuda --attn_type mqa
 ```
 
-| Flag             | Default | Description                  |
-| ---------------- | ------- | ---------------------------- |
-| `--max_steps`    | `5000`  | Training steps               |
-| `--lr`           | `3e-4`  | Learning rate (AdamW)        |
-| `--weight_decay` | `0.1`   | Weight decay                 |
-| `--device`       | `cuda`  | Device                       |
+| Flag             | Default | Description                         |
+| ---------------- | ------- | ----------------------------------- |
+| `--max_steps`    | `5000`  | Training steps                      |
+| `--lr`           | `3e-4`  | Learning rate (AdamW)               |
+| `--weight_decay` | `0.1`   | Weight decay                        |
+| `--device`       | `cuda`  | Device                              |
 | `--backend`      | `cuda`  | `cuda` (cpp extension) or `pytorch` |
-| `--attn_type`    | `mqa`   | `mqa` or `mha`               |
+| `--attn_type`    | `mqa`   | `mqa` or `mha`                      |
 
 Checkpoints are saved to `checkpoints/` and store both the model config and training flags, so inference reproduces the exact setup.
 
@@ -75,26 +76,58 @@ Tokens are printed to the terminal as they are generated (streaming).
 
 ## Benchmarks
 
-Run the decode and prefill comparative benchmark suite:
+Run the prefill and decode benchmark with both backends:
+
 ```bash
 python -m benchmarks.bench_decode_prefill --batch 32 --compare
 ```
 
 ### Performance Summary
+
 **Model Profile:** 27.7M parameters | MQA Attention | `d_model` 256 | 8 Layers | Batch 32 | Prompt Length 100
 
-| Metric | `cuda` (cpp extension) Backend | `pytorch` Backend | Improvement |
-| :--- | :---: | :---: | :---: |
-| **Prefill Latency (p50)** | **27.967 ms** | 35.822 ms | ~21.9% faster |
-| **Prefill Throughput** | **114,420.7 tok/s** | 89,329.6 tok/s | +25,091.1 tok/s |
-| **Decode Latency (p50)** | **4.020 ms** | 5.597 ms | ~28.2% faster |
-| **Decode Throughput** | **248.7 tok/s** | 178.7 tok/s | +70.0 tok/s |
-| **Peak VRAM Memory** | **1089 MB** | 1227 MB | Saving 138 MB |
+| Metric                    | `cuda` (cpp extension) Backend | `pytorch` Backend |         Improvement |
+| :------------------------ | -----------------------------: | ----------------: | ------------------: |
+| **Prefill Latency (p50)** |                  **12.143 ms** |         12.717 ms |    **~4.5% faster** |
+| **Prefill Throughput**    |            **263,535.2 tok/s** |   251,622.0 tok/s | **+11,913.2 tok/s** |
+| **Decode Latency (p50)**  |                   **0.577 ms** |          0.723 ms |   **~20.2% faster** |
+| **Decode Throughput**     |              **1,734.6 tok/s** |     1,382.3 tok/s |    **+352.3 tok/s** |
+| **Peak VRAM Memory**      |                     **708 MB** |            794 MB |    **Saving 86 MB** |
+
+### KV Cache Scaling
+
+The CUDA backend maintains nearly constant decode latency as the KV cache grows:
+
+| KV Cache Length | Decode Latency |
+| --------------: | -------------: |
+|             ~10 |       1.880 ms |
+|            ~490 |       1.923 ms |
+|           Ratio |      **1.02x** |
+
+This demonstrates that MQA + KV caching keeps decode performance relatively stable as the cached sequence grows.
+
+### CUDA Profiler
+
+The CUDA backend was profiled during inference to identify the major GPU execution costs.
+
+| Operation               |  CUDA Time | % of CUDA Time |
+| ----------------------- | ---------: | -------------: |
+| `aten::mm` / GEMM       |   4.386 ms |         48.90% |
+| PyTorch Flash Attention |   1.996 ms |         22.26% |
+| RMSNorm CUDA kernel     | 937.739 µs |         10.46% |
+| `aten::copy_`           | 395.489 µs |          4.41% |
+| RoPE CUDA kernel        | 324.585 µs |          3.62% |
+| `aten::add`             | 313.798 µs |          3.50% |
+
+**Total profiled CUDA time:** 8.968 ms
+
+The profiling results show that matrix multiplications are currently the largest GPU execution cost, followed by attention and RMSNorm.
 
 ## Project Structure
 
 ```text
 tiny-transformer-inference/
+
 │
 ├── .vscode/
 │
