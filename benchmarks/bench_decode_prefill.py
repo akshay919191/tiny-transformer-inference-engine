@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 
 def build_model(cfg, state_dict, backend, attn_type, device):
     model = Transformer(cfg, attn_type=attn_type, backend=backend).to(device)
+    model = model.to(device=device, dtype=torch.float16)
     model.load_state_dict(state_dict)
     model.eval()
     return model
@@ -69,29 +70,59 @@ def bench_prefill(model, tokens, make_cache, warmup=10, iters=50):
         times.append(start.elapsed_time(end))
     return times
 
+class CUDAGraphRunner:
+    """Captures the decode forward step in a single hardware CUDA Graph."""
+    def __init__(self, model, batch_size, kv_cache, device="cuda"):
+        self.model = model
+        self.kv_cache = kv_cache
+        self.device = device
+        
+        # Static input & output buffers
+        self.static_input = torch.zeros((batch_size, 1), dtype=torch.long, device=device)
+        self.graph = torch.cuda.CUDAGraph()
+        
+        # Warmup inside side-stream
+        s = torch.cuda.Stream()
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            for _ in range(3):
+                self.static_logits = self.model(self.static_input, kv_cache=self.kv_cache)[:, -1, :]
+        torch.cuda.current_stream().wait_stream(s)
+        
+        # Capture graph
+        with torch.cuda.graph(self.graph):
+            self.static_logits = self.model(self.static_input, kv_cache=self.kv_cache)[:, -1, :]
 
-def bench_decode(model, prompt_tokens, make_cache, num_tokens=128, warmup=10):
-    # warmup with short decode runs
-    for _ in range(warmup):
-        cache = make_cache()
-        tok = prefill(model, prompt_tokens, cache).argmax(-1, keepdim=True)
-        for _ in range(10):
-            tok = decode_one(model, tok, cache).argmax(-1, keepdim=True)
-    torch.cuda.synchronize()
+    def __call__(self, input_ids):
+        self.static_input.copy_(input_ids)
+        self.graph.replay()
+        return self.static_logits
 
+def bench_decode(model, prompt_tokens, make_cache, num_tokens=128, warmup=10, use_cuda_graph=True):
     cache = make_cache()
     tok = prefill(model, prompt_tokens, cache).argmax(-1, keepdim=True)
+
+    if use_cuda_graph:
+        runner = CUDAGraphRunner(model, prompt_tokens.shape[0], cache, prompt_tokens.device)
+        decode_fn = runner
+    else:
+        decode_fn = lambda t: decode_one(model, t, cache)
+
+    # Warmup
+    for _ in range(warmup):
+        logits = decode_fn(tok)
+        tok = logits.argmax(-1, keepdim=True)
+    torch.cuda.synchronize()
 
     events = [(torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True))
               for _ in range(num_tokens)]
     for s, e in events:
         s.record()
-        logits = decode_one(model, tok, cache)
+        logits = decode_fn(tok)
         e.record()
-        tok = logits.argmax(-1, keepdim=True)  # greedy
-    torch.cuda.synchronize() 
+        tok = logits.argmax(-1, keepdim=True)
+    torch.cuda.synchronize()
     return [s.elapsed_time(e) for s, e in events]
-
 
 
 
@@ -200,7 +231,6 @@ def main():
 
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
         for _ in range(10):
-            decode_one(model, tok, cache)
             tok = decode_one(model, tok, cache).argmax(-1, keepdim=True)
 
     print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=15))

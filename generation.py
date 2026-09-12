@@ -27,7 +27,7 @@ def load_model(ckpt_path, device, attn_type=None, backend=None, causal=None):
 
     resolved_attn_type = attn_type if attn_type is not None else train_cfg.get("attn_type", "mqa")
     requested_backend = backend if backend is not None else train_cfg.get("backend", "pytorch")
-\
+
     resolved_backend = resolve_backend(requested_backend, run_time, resolved_attn_type)
 
     if causal is not None:
@@ -35,8 +35,15 @@ def load_model(ckpt_path, device, attn_type=None, backend=None, causal=None):
 
     print(f"[DEBUG] Loading model with attn_type={resolved_attn_type}, backend={resolved_backend}, causal={run_time.causal}")
 
-    model = Transformer(run_time, attn_type=resolved_attn_type, backend=resolved_backend).to(device)
+    model = Transformer(run_time, attn_type=resolved_attn_type, backend=resolved_backend)
     model.load_state_dict(ckpt["model"])
+    
+
+    if resolved_backend == "cuda":
+        model = model.to(device=device, dtype=torch.float16)
+    else:
+        model = model.to(device=device)
+
     model.eval()
     return model, run_time
 
@@ -59,6 +66,9 @@ def generate(model, run_time, device, prompt, max_new_tokens=100, temperature=0.
 
     kv_heads = getattr(run_time, "num_kv_heads", run_time.num_heads)
     head_dim = run_time.d_model // run_time.num_heads
+    
+    # match cache dtype to model parameters (Float16 or Float32)
+    model_dtype = next(model.parameters()).dtype
 
     kv_cache = KVCache_kv(
         num_layers=run_time.num_layers,
@@ -66,7 +76,7 @@ def generate(model, run_time, device, prompt, max_new_tokens=100, temperature=0.
         num_heads=kv_heads,
         max_seq_len=run_time.max_seq_len,
         head_dim=head_dim,
-        dtype=torch.float32,  # custom kernels are fp16 internally, but boundary stays fp32
+        dtype=model_dtype,  # Pure zero-copy bypass
         device=device,
     )
 

@@ -30,21 +30,12 @@ from kv_cache import KVCache_kv
 
 
 def _build_attention(config, attn_type, backend, cached):
-    """
-    attn_type: "mha" or "mqa"
-    backend:   "cuda" or "pytorch" (forwarded to the chosen attention module)
-    cached:    True -> return the KV-cache-aware variant
-    """
-
-    assert attn_type in ("mha", "mqa"), \
-        f"attn_type must be 'mha' or 'mqa', got {attn_type!r}"
-
+    assert attn_type in ("mha", "mqa")
     if attn_type == "mqa":
         cls = MQA_Cached if cached else MQA
         return cls(config, backend=backend)
 
     cls = MHA_CACHED if cached else MHA
-
     return cls(
         numhead=config.num_heads,
         dmodel=config.d_model,
@@ -146,115 +137,47 @@ class Transformer_nocache(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-
     def __init__(self, config, layer_idx, attn_type="mqa", backend="cuda"):
         super().__init__()
-
         self.layer_idx = layer_idx
-
         self.attn_norm = RMSNorm(config.d_model)
-
-        self.attn = _build_attention(
-            config,
-            attn_type=attn_type,
-            backend=backend,
-            cached=True,
-        )
-
+        self.attn = _build_attention(config, attn_type=attn_type, backend=backend, cached=True)
         self.mlp_norm = RMSNorm(config.d_model)
-
-        self.mlp = SwiGLU(
-            config.d_model,
-            config.hidden_size,
-            config.bias,
-        )
+        self.mlp = SwiGLU(config.d_model, config.hidden_size, config.bias)
 
     def forward(self, x, kv_cache):
+        residual = x
+        x = self.attn_norm(x)
+        x = self.attn(x, x, x, kv_cache=kv_cache, layer_idx=self.layer_idx, causal=True)
+        x = x + residual
 
         residual = x
-
-        with torch.profiler.record_function("attn_norm"):
-            x = self.attn_norm(x)
-
-        with torch.profiler.record_function("attention"):
-            x = self.attn(
-                x,
-                x,
-                x,
-                kv_cache=kv_cache,
-                layer_idx=self.layer_idx,
-                causal=True,
-            )
-
-        with torch.profiler.record_function("attn_residual"):
-            x = x + residual
-
-        residual = x
-
-        with torch.profiler.record_function("mlp_norm"):
-            x = self.mlp_norm(x)
-
-        with torch.profiler.record_function("mlp"):
-            x = self.mlp(x)
-
-        with torch.profiler.record_function("mlp_residual"):
-            x = x + residual
-
+        x = self.mlp_norm(x)
+        x = self.mlp(x)
+        x = x + residual
         return x
 
 class Transformer(nn.Module):
-
     def __init__(self, config, attn_type="mqa", backend="cuda"):
         super().__init__()
-
-        self.embedding = TokenEmbedding(
-            config.vocab_size,
-            config.d_model,
-        )
-
+        self.embedding = TokenEmbedding(config.vocab_size, config.d_model)
         self.layers = nn.ModuleList([
-            TransformerBlock(
-                config,
-                layer_idx=i,
-                attn_type=attn_type,
-                backend=backend,
-            )
+            TransformerBlock(config, layer_idx=i, attn_type=attn_type, backend=backend)
             for i in range(config.num_layers)
         ])
-
         self.final_norm = RMSNorm(config.d_model)
-
-        self.lm_head = nn.Linear(
-            config.d_model,
-            config.vocab_size,
-            bias=False,
-        )
+        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
     def forward(self, input_ids, kv_cache=None):
-
-        with torch.profiler.record_function("embedding"):
-            x = self.embedding(input_ids)
-
-        for i, layer in enumerate(self.layers):
-
-            with torch.profiler.record_function(
-                f"transformer_layer_{i}"
-            ):
-                x = layer(
-                    x,
-                    kv_cache=kv_cache,
-                )
+        x = self.embedding(input_ids)
+        for layer in self.layers:
+            x = layer(x, kv_cache=kv_cache)
 
         if kv_cache is not None:
-            with torch.profiler.record_function("kv_cache_advance"):
-                kv_cache.advance(input_ids.shape[1])
+            kv_cache.advance(input_ids.shape[1])
 
-        with torch.profiler.record_function("final_norm"):
-            x = self.final_norm(x)
-
-        with torch.profiler.record_function("lm_head"):
-            logits = self.lm_head(x)
-
+        x = self.final_norm(x)
+        logits = self.lm_head(x)
         return logits
 
 
