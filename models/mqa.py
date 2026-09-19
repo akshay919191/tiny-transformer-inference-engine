@@ -160,6 +160,27 @@ class MQA_Cached(nn.Module):
         sin = self.sin_cache.index_select(0, pos)
         return Rope.apply(x, None, cos, sin, self.rotary_dim, 0)
 
+    def _sdpa_masked(self, q, k, v, mask):
+
+        B, H, SQ, D = q.shape
+        Hkv = k.shape[1]
+        G = H // Hkv
+
+        if mask is not None and mask.dim() == 2:
+            mask = mask[None, None]
+
+        if G > 1:
+            q = q.reshape(B, Hkv, G * SQ, D)
+            if mask is not None and mask.size(-2) != 1:
+                mask = mask.repeat(1, 1, G, 1)  # tile the SQ mask rows G times
+
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=mask,
+            dropout_p=self.dropout if self.training else 0.0,
+        )
+        return out.reshape(B, H, SQ, D)
+
     def forward(
         self,
         query,
@@ -197,25 +218,44 @@ class MQA_Cached(nn.Module):
                     enable_gqa=(self.num_kv_heads != self.num_heads),
                 )
         else:
+            capturing = torch.cuda.is_current_stream_capturing()
+            start = None if capturing else int(kv_cache.length)
+
             if self.backend == "cuda":
                 q = self._rope_cached(q, kv_cache)
                 k = self._rope_cached(k, kv_cache)
             else:
-                off = kv_cache.length
-                q, k = self.rope(q, k, position_offset=off)
+                q, k = self.rope.forward_at(q, k, kv_cache.positions(q.shape[2]))
 
-            k, v = kv_cache.update(layer_idx, k, v)  # FULL [B, Hkv, max_seq_len, D]
+            k_full, v_full = kv_cache.update(layer_idx, k, v)  # FULL [B, Hkv, max_seq_len, D]
+            q = q.to(k_full.dtype)
 
-            if attn_mask is None:
-                attn_mask = kv_cache.attn_mask(SQ, causal=causal)
+            if attn_mask is None and not capturing:
+                L = start + SQ
+                is_prefill = causal and SQ > 1 and start == 0
+                assert SQ == 1 or start == 0, (
+                    "chunked prefill (SQ>1 with a non-empty cache) needs a "
+                    "bottom-right-aligned causal mask; pass attn_mask explicitly"
+                )
 
-            q = q.to(k.dtype) 
-            out = F.scaled_dot_product_attention(
-                q, k, v,
-                attn_mask=attn_mask,
-                dropout_p=self.dropout if self.training else 0.0,
-                enable_gqa=(self.num_kv_heads != self.num_heads),
-            ).to(query.dtype)
+                k_v = k_full[:, :, :L]
+                v_v = v_full[:, :, :L]
+
+                if self.backend == "cuda":
+                    out = FlashAttn.apply(q, k_v, v_v, is_prefill)
+                else:
+                    out = F.scaled_dot_product_attention(
+                        q, k_v, v_v,
+                        is_causal=is_prefill,
+                        dropout_p=self.dropout if self.training else 0.0,
+                        enable_gqa=(self.num_kv_heads != self.num_heads),
+                    )
+            else:
+                if attn_mask is None:
+                    attn_mask = kv_cache.attn_mask(SQ, causal=causal)
+                out = self._sdpa_masked(q, k_full, v_full, attn_mask)
+
+            out = out.to(query.dtype)
 
         out = out.transpose(1, 2).contiguous().view(B, SQ, self.d_model)
         out = self.out(out)

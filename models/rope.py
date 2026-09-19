@@ -1,9 +1,5 @@
-import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
-
 
 
 class RoPE(nn.Module):
@@ -19,16 +15,12 @@ class RoPE(nn.Module):
         positions = torch.arange(max_seq_len).float()
         freqs = torch.outer(positions, inv_freq)
 
+        # [1, 1, max_seq_len, D/2]
         self.register_buffer("cos", freqs.cos().unsqueeze(0).unsqueeze(0), persistent=False)
         self.register_buffer("sin", freqs.sin().unsqueeze(0).unsqueeze(0), persistent=False)
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, position_offset: int = 0):
-        # q, k: [B, H, T, D]
-        T = q.shape[-2]
-        
-        cos = self.cos[:, :, position_offset : position_offset + T, :].to(dtype=q.dtype)
-        sin = self.sin[:, :, position_offset : position_offset + T, :].to(dtype=q.dtype)
-
+    @staticmethod
+    def _rotate(q, k, cos, sin):
         q_out = torch.empty_like(q)
         k_out = torch.empty_like(k)
 
@@ -42,3 +34,15 @@ class RoPE(nn.Module):
         k_out[..., 1::2] = k_even * sin + k_odd * cos
 
         return q_out, k_out
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor, position_offset: int = 0):
+        T = q.shape[-2]
+        cos = self.cos[:, :, position_offset : position_offset + T, :].to(dtype=q.dtype)
+        sin = self.sin[:, :, position_offset : position_offset + T, :].to(dtype=q.dtype)
+        return self._rotate(q, k, cos, sin)
+
+    def forward_at(self, q: torch.Tensor, k: torch.Tensor, positions: torch.Tensor):
+
+        cos = self.cos.index_select(2, positions).to(dtype=q.dtype)
+        sin = self.sin.index_select(2, positions).to(dtype=q.dtype)
+        return self._rotate(q, k, cos, sin)
