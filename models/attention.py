@@ -94,7 +94,10 @@ class MHA(nn.Module):
         if self.backend == "cuda":
             SQ = q.shape[2]
             SK = k.shape[2]
-            needs_mask = causal and (SQ == SK)
+            if causal and (SQ == SK):
+                needs_mask = True
+            else:
+                needs_mask = False
 
             if self.training:
                 out = FlashAttn.apply(q, k, v, needs_mask)
@@ -208,6 +211,7 @@ class MHA_CACHED(nn.Module):
         return self
 
     def _apply_rope(self, q, k, position_offset=0):
+        # No-cache path only: position_offset is a Python int here.
         if self.backend == "cuda":
             if self.training:
                 q = Rope.apply(q, None, self.cos_cache, self.sin_cache, self.rotary_dim, position_offset)
@@ -229,9 +233,18 @@ class MHA_CACHED(nn.Module):
 
         return self.rope(q, k, position_offset=position_offset)
 
+    def _rope_cached(self, x, kv_cache):
+        pos = kv_cache.positions(x.shape[2])
+        cos = self.cos_cache.index_select(0, pos)
+        sin = self.sin_cache.index_select(0, pos)
+        return Rope.apply(x, None, cos, sin, self.rotary_dim, 0)
+
     def _attention(self, q, k, v, causal, SQ, SK, return_attn):
         if self.backend == "cuda":
-            needs_mask = causal and (SQ == SK)
+            if causal and (SQ == SK):
+                needs_mask = True
+            else:
+                needs_mask = False
 
             if self.training:
                 out = FlashAttn.apply(q, k, v, needs_mask)
@@ -276,6 +289,7 @@ class MHA_CACHED(nn.Module):
         layer_idx=None,
         causal=False,
         return_attn=False,
+        attn_mask=None,
     ):
         B, SQ, D = query.shape
 
@@ -283,14 +297,27 @@ class MHA_CACHED(nn.Module):
         k = self.key(key).view(B, key.shape[1], self.numhead, self.headdim).transpose(1, 2)
         v = self.value(value).view(B, value.shape[1], self.numhead, self.headdim).transpose(1, 2)
 
-        position_offset = kv_cache.length if kv_cache is not None else 0
-        q, k = self._apply_rope(q, k, position_offset=position_offset)
+        if kv_cache is None:
+            q, k = self._apply_rope(q, k, position_offset=0)
+            out, attn = self._attention(q, k, v, causal, SQ, k.shape[2], return_attn)
+        else:
+            if self.backend == "cuda":
+                q = self._rope_cached(q, kv_cache)
+                k = self._rope_cached(k, kv_cache)
+            else:
+                q, k = self.rope(q, k, position_offset=kv_cache.length)
 
-        if kv_cache is not None:
-            k, v = kv_cache.update(layer_idx, k, v)
+            k, v = kv_cache.update(layer_idx, k, v)  # FULL [B, H, max_seq_len, D]
 
-        SK = k.shape[2]
-        out, attn = self._attention(q, k, v, causal, SQ, SK, return_attn)
+            if attn_mask is None:
+                attn_mask = kv_cache.attn_mask(SQ, causal=causal)
+
+            q = q.to(k.dtype)  # cache dtype; no-op if they already match
+            out = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=attn_mask,
+                dropout_p=self.dropout if self.training else 0.0,
+            ).to(query.dtype)
 
         out = out.transpose(1, 2)
         if not out.is_contiguous():
