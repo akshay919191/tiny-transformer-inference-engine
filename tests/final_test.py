@@ -96,7 +96,7 @@ def test_full_text_generation(full_model, config):
 
 def test_transformer_prefill_and_decode(full_model, config):
     """
-    Verifies KV cache shape progression and numerical sanity.
+    Verifies KV cache position progression and output shapes.
     """
     batch_size = 2
     prompt_len = 16
@@ -126,6 +126,39 @@ def test_transformer_prefill_and_decode(full_model, config):
         decode_logits = full_model(next_tok, kv_cache=cache)
         assert decode_logits.shape == (batch_size, 1, config.vocab_size)
         assert cache.length == prompt_len + 1
+
+
+def test_cached_matches_uncached(full_model, config):
+    """
+    The important one: cached decoding must match recomputing the whole
+    sequence with NO cache. Catches wrong RoPE offsets, wrong masks and
+    bad cache writes, which shape/length checks cannot.
+    """
+    torch.manual_seed(0)
+    batch_size, prompt_len, steps = 2, 16, 12
+    kv_heads = getattr(config, "num_kv_heads", config.num_heads)
+    head_dim = config.d_model // config.num_heads
+
+    cache = KVCache_kv(
+        num_layers=config.num_layers,
+        batch_size=batch_size,
+        num_heads=kv_heads,
+        max_seq_len=64,
+        head_dim=head_dim,
+        dtype=torch.float16,
+        device="cuda",
+    )
+
+    seq = torch.randint(0, config.vocab_size, (batch_size, prompt_len), device="cuda")
+    with torch.no_grad():
+        got = full_model(seq, kv_cache=cache)[:, -1, :].float()
+        for step in range(steps):
+            ref = full_model(seq)[:, -1, :].float()
+            rel = ((got - ref).abs().max() / ref.abs().max().clamp_min(1e-6)).item()
+            assert rel < 0.05, f"cached != uncached at step {step}: rel diff {rel:.4f}"
+            nxt = ref.argmax(-1, keepdim=True)  # same token fed to both paths
+            seq = torch.cat([seq, nxt], dim=1)
+            got = full_model(nxt, kv_cache=cache)[:, -1, :].float()
 
 
 def test_kv_cache_overflow(config):

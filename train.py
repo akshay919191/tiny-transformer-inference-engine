@@ -37,7 +37,6 @@ TYPE_MAP = {"int": int, "float": float, "bool": str2bool, "str": str}
 
 
 def add_model_args(parser):
-    """Auto-create one CLI flag per ModelConfig field, e.g. --num_layers 12"""
     group = parser.add_argument_group("model config")
     for f in fields(ModelConfig):
         if f.name == "dtype":
@@ -88,15 +87,15 @@ def get_batch(split, config, device):
 
 def save_checkpoint(path, model, optimizer, step, model_config, train_args):
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    raw_model = getattr(model, "_orig_mod", model)
     torch.save({
-        "model": model.state_dict(),
+        "model": raw_model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "step": step,
         "model_config": vars(model_config),
         "train_config": vars(train_args),
     }, path)
     print(f"Saved checkpoint: {path}")
-
 
 def train(args):
     device = args.device
@@ -107,6 +106,7 @@ def train(args):
     args.backend = resolved_backend
 
     model = Transformer(run_time, attn_type=args.attn_type, backend=resolved_backend).to(device)
+    model = torch.compile(model, mode="reduce-overhead")
 
     for module in model.modules():
         if hasattr(module, "cos_cache") and module.cos_cache is not None:

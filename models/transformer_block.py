@@ -174,7 +174,7 @@ class Transformer(nn.Module):
             x = layer(x, kv_cache=kv_cache)
 
         if kv_cache is not None:
-            kv_cache.advance(input_ids.shape[1])
+            kv_cache.advance() ## as by default its already 1 , no need to write here
 
         x = self.final_norm(x)
         logits = self.lm_head(x)

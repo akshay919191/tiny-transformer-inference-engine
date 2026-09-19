@@ -36,8 +36,12 @@ def load_model(ckpt_path, device, attn_type=None, backend=None, causal=None):
     print(f"[DEBUG] Loading model with attn_type={resolved_attn_type}, backend={resolved_backend}, causal={run_time.causal}")
 
     model = Transformer(run_time, attn_type=resolved_attn_type, backend=resolved_backend)
-    model.load_state_dict(ckpt["model"])
     
+    state_dict = ckpt["model"]
+    unwrapped_state_dict = {
+        k.replace("_orig_mod.", ""): v for k, v in state_dict.items()
+    }
+    model.load_state_dict(unwrapped_state_dict)
 
     if resolved_backend == "cuda":
         model = model.to(device=device, dtype=torch.float16)
