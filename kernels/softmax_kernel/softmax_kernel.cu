@@ -1,3 +1,4 @@
+#include <ATen/cuda/CUDAContext.h>
 #include "../common/common_helper.cuh"
 #include "private_helper.cuh"
 
@@ -253,7 +254,7 @@ std::vector<torch::Tensor> softmax_forward_launch(torch::Tensor x) {
         ));
     }
 
-    softmaxfwd_kernel<Br><<<grid, block, smem>>>(
+    softmaxfwd_kernel<Br><<<grid, block, smem, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __half*>(x.data_ptr<at::Half>()),
         reinterpret_cast<__half*>(y.data_ptr<at::Half>()),
         D,  // headdim
@@ -301,7 +302,7 @@ std::vector<torch::Tensor> softmax_backward_launch(
         ));
     }
 
-    softmaxbwd_kernel<Br><<<grid, block, smem>>>(
+    softmaxbwd_kernel<Br><<<grid, block, smem, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __half*>(x.data_ptr<at::Half>()),
         reinterpret_cast<const __half*>(dy.data_ptr<at::Half>()),
         reinterpret_cast<__half*>(dx.data_ptr<at::Half>()),

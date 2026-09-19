@@ -26,8 +26,8 @@ rule cuda_compile
 
 
 
-build /home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/softmax_kernel/build/temp.linux-x86_64-cpython-310/binding.o: compile /home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/softmax_kernel/binding.cpp
-build /home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/softmax_kernel/build/temp.linux-x86_64-cpython-310/softmax_kernel.o: cuda_compile /home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/softmax_kernel/softmax_kernel.cu
+build /home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/softmax_kernel/build/temp.linux-x86_64-cpython-310/binding.o: compile /home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/softmax_kernel/binding.cpp
+build /home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/softmax_kernel/build/temp.linux-x86_64-cpython-310/softmax_kernel.o: cuda_compile /home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/softmax_kernel/softmax_kernel.cu
 
 
 

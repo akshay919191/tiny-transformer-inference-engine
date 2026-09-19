@@ -6,8 +6,6 @@ from kernels.kernel import (
     rope_cache,
     Rope,
     FlashAttn,
-    rope_cuda,
-    flashattn,
 )
 from .rope import RoPE
 
@@ -57,22 +55,8 @@ class MQA(nn.Module):
 
     def _apply_rope(self, q, k, position_offset):
         if self.backend == "cuda":
-            if self.training:
-                q = Rope.apply(q, None, self.cos_cache, self.sin_cache, self.rotary_dim, position_offset)
-                k = Rope.apply(k, None, self.cos_cache, self.sin_cache, self.rotary_dim, position_offset)
-                return q, k
-
-            orig_dtype = q.dtype
-            q_c = q if q.is_contiguous() else q.contiguous()
-            k_c = k if k.is_contiguous() else k.contiguous()
-            q_half = q_c.half() if q_c.dtype != torch.float16 else q_c
-            k_half = k_c.half() if k_c.dtype != torch.float16 else k_c
-
-            q = rope_cuda.forward(q_half, None, self.cos_cache, self.sin_cache, self.rotary_dim, position_offset)
-            k = rope_cuda.forward(k_half, None, self.cos_cache, self.sin_cache, self.rotary_dim, position_offset)
-
-            if q.dtype != orig_dtype:
-                q, k = q.to(orig_dtype), k.to(orig_dtype)
+            q = Rope.apply(q, None, self.cos_cache, self.sin_cache, self.rotary_dim, position_offset)
+            k = Rope.apply(k, None, self.cos_cache, self.sin_cache, self.rotary_dim, position_offset)
             return q, k
 
         return self.rope(q, k, position_offset=position_offset)
@@ -80,30 +64,19 @@ class MQA(nn.Module):
     def forward(self, query, key, value, causal=False, return_attn=False, position_offset=0):
         B, SQ, _ = query.shape
         SK = key.shape[1]
-        orig_dtype = query.dtype
 
         q = self.q_proj(query).view(B, SQ, self.num_heads, self.headdim).transpose(1, 2)
         k = self.k_proj(key).view(B, SK, self.num_kv_heads, self.headdim).transpose(1, 2)
         v = self.v_proj(value).view(B, SK, self.num_kv_heads, self.headdim).transpose(1, 2)
 
         q, k = self._apply_rope(q, k, position_offset)
-        needs_mask = causal and (SQ == SK)
+        if causal and (SQ == SK):
+            needs_mask = True
+        else:
+            needs_mask = False
 
         if self.backend == "cuda":
-            if self.training:
-                out = FlashAttn.apply(q, k, v, needs_mask)
-            else:
-                q_c = q if q.is_contiguous() else q.contiguous()
-                k_c = k if k.is_contiguous() else k.contiguous()
-                v_c = v if v.is_contiguous() else v.contiguous()
-
-                q_half = q_c.half() if q_c.dtype != torch.float16 else q_c
-                k_half = k_c.half() if k_c.dtype != torch.float16 else k_c
-                v_half = v_c.half() if v_c.dtype != torch.float16 else v_c
-
-                out, _ = flashattn.flash_fwd(q_half, k_half, v_half, needs_mask)
-                if out.dtype != orig_dtype:
-                    out = out.to(orig_dtype)
+            out = FlashAttn.apply(q, k, v, needs_mask)
         else:
             out = F.scaled_dot_product_attention(
                 q, k, v,
@@ -164,26 +137,28 @@ class MQA_Cached(nn.Module):
         return self
 
     def _apply_rope(self, q, k, position_offset):
+        # No-cache path only: position_offset is a Python int here.
         if self.backend == "cuda":
-            if self.training:
-                q = Rope.apply(q, None, self.cos_cache, self.sin_cache, self.rotary_dim, position_offset)
-                k = Rope.apply(k, None, self.cos_cache, self.sin_cache, self.rotary_dim, position_offset)
-                return q, k
-
-            orig_dtype = q.dtype
-            q_c = q if q.is_contiguous() else q.contiguous()
-            k_c = k if k.is_contiguous() else k.contiguous()
-            q_half = q_c.half() if q_c.dtype != torch.float16 else q_c
-            k_half = k_c.half() if k_c.dtype != torch.float16 else k_c
-
-            q = rope_cuda.forward(q_half, None, self.cos_cache, self.sin_cache, self.rotary_dim, position_offset)
-            k = rope_cuda.forward(k_half, None, self.cos_cache, self.sin_cache, self.rotary_dim, position_offset)
-
-            if q.dtype != orig_dtype:
-                q, k = q.to(orig_dtype), k.to(orig_dtype)
+            q = Rope.apply(q, None, self.cos_cache, self.sin_cache, self.rotary_dim, position_offset)
+            k = Rope.apply(k, None, self.cos_cache, self.sin_cache, self.rotary_dim, position_offset)
             return q, k
 
         return self.rope(q, k, position_offset=position_offset)
+
+    def _rope_cached(self, x, kv_cache):
+        """
+        RoPE at the cache's tensor position, with no Python-int offset.
+
+        The custom op takes `position_offset: int`, which would change every
+        step and force a recompile + new CUDA graph. Instead we gather the
+        cos/sin rows for the current positions on-device and hand the op that
+        small slice with offset 0. Same rows, same math, no int in the graph.
+        (Assumes cos_cache/sin_cache are indexed by position on dim 0.)
+        """
+        pos = kv_cache.positions(x.shape[2])
+        cos = self.cos_cache.index_select(0, pos)
+        sin = self.sin_cache.index_select(0, pos)
+        return Rope.apply(x, None, cos, sin, self.rotary_dim, 0)
 
     def forward(
         self,
@@ -194,47 +169,53 @@ class MQA_Cached(nn.Module):
         layer_idx=None,
         causal=True,
         return_attn=False,
+        attn_mask=None,
     ):
         B, SQ, _ = query.shape
         SK_new = key.shape[1]
-        orig_dtype = query.dtype
 
         q = self.q_proj(query).view(B, SQ, self.num_heads, self.headdim).transpose(1, 2)
         k = self.k_proj(key).view(B, SK_new, self.num_kv_heads, self.headdim).transpose(1, 2)
         v = self.v_proj(value).view(B, SK_new, self.num_kv_heads, self.headdim).transpose(1, 2)
 
-        position_offset = kv_cache.length if kv_cache is not None else 0
-        q, k = self._apply_rope(q, k, position_offset)
+        if kv_cache is None:
+            q, k = self._apply_rope(q, k, 0)
 
-        if kv_cache is not None:
-            k, v = kv_cache.update(layer_idx, k, v)
+            SK = k.shape[2]
+            if causal and (SQ == SK):
+                needs_mask = True
+            else:
+                needs_mask = False
 
-        SK = k.shape[2]
-        needs_mask = causal and (SQ == SK)
-
-        if self.backend == "cuda":
-            if self.training:
+            if self.backend == "cuda":
                 out = FlashAttn.apply(q, k, v, needs_mask)
             else:
-                if q.is_contiguous() and k.is_contiguous() and v.is_contiguous():
-                    q_half = q.half() if q.dtype != torch.float16 else q
-                    k_half = k.half() if k.dtype != torch.float16 else k
-                    v_half = v.half() if v.dtype != torch.float16 else v
-                    out, _ = flashattn.flash_fwd(q_half, k_half, v_half, needs_mask)
-                    if out.dtype != orig_dtype:
-                        out = out.to(orig_dtype)
-                else:
-                    out = F.scaled_dot_product_attention(
-                        q, k, v, is_causal=needs_mask, dropout_p=0.0,
-                        enable_gqa=(self.num_kv_heads != self.num_heads)
-                    )
+                out = F.scaled_dot_product_attention(
+                    q, k, v,
+                    is_causal=needs_mask,
+                    dropout_p=self.dropout if self.training else 0.0,
+                    enable_gqa=(self.num_kv_heads != self.num_heads),
+                )
         else:
+            if self.backend == "cuda":
+                q = self._rope_cached(q, kv_cache)
+                k = self._rope_cached(k, kv_cache)
+            else:
+                off = kv_cache.length
+                q, k = self.rope(q, k, position_offset=off)
+
+            k, v = kv_cache.update(layer_idx, k, v)  # FULL [B, Hkv, max_seq_len, D]
+
+            if attn_mask is None:
+                attn_mask = kv_cache.attn_mask(SQ, causal=causal)
+
+            q = q.to(k.dtype) 
             out = F.scaled_dot_product_attention(
                 q, k, v,
-                is_causal=needs_mask,
+                attn_mask=attn_mask,
                 dropout_p=self.dropout if self.training else 0.0,
                 enable_gqa=(self.num_kv_heads != self.num_heads),
-            )
+            ).to(query.dtype)
 
         out = out.transpose(1, 2).contiguous().view(B, SQ, self.d_model)
         out = self.out(out)

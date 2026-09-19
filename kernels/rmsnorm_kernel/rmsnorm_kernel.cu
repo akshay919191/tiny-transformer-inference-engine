@@ -1,3 +1,4 @@
+#include <ATen/cuda/CUDAContext.h>
 #include "../common/common_helper.cuh"  /// common among most of kernels
 #include "private_helper.cuh"           /// specific for this 
 /// includes needed
@@ -421,7 +422,7 @@ std::vector<torch::Tensor> rmsnorm_forward_launch(
         ));
     }
 
-    rmsfwd_kernel<Br><<<grid, block, smem>>>(
+    rmsfwd_kernel<Br><<<grid, block, smem, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __half*>(x.data_ptr<at::Half>()),
         reinterpret_cast<__half*>(y.data_ptr<at::Half>()),
         static_cast<float>(eps),
@@ -479,7 +480,7 @@ std::vector<torch::Tensor> rmsnorm_backward_launch(
         ));
     }
 
-    rmsbwd_kernel<Br><<<grid, block, smem>>>(
+    rmsbwd_kernel<Br><<<grid, block, smem, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __half*>(dy.data_ptr<at::Half>()),
         reinterpret_cast<const __half*>(x.data_ptr<at::Half>()),
         reinterpret_cast<const __half*>(gamma.data_ptr<at::Half>()),

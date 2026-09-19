@@ -1,3 +1,3 @@
 # ninja log v7
-0	10710	1783777274579555378	/home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/rmsnorm_kernel/build/temp.linux-x86_64-cpython-310/binding.o	b18434902a6dc298
-0	39148	1783777274579555378	/home/toxiccccterabaap/Downloads/cuda-kernels-lab/kernels/cuda/rmsnorm_kernel/build/temp.linux-x86_64-cpython-310/rmsnorm_kernel.o	37e541394e96e20
+0	11276	1789805829694484766	/home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/rmsnorm_kernel/build/temp.linux-x86_64-cpython-310/binding.o	c4fddbae0511336e
+0	41236	1789805829694484766	/home/toxiccccterabaap/Downloads/inference-transformer/tiny-transformer-inference-engine/kernels/rmsnorm_kernel/build/temp.linux-x86_64-cpython-310/rmsnorm_kernel.o	28e57e17f52a25a5
