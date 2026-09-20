@@ -15,7 +15,6 @@ class RoPE(nn.Module):
         positions = torch.arange(max_seq_len).float()
         freqs = torch.outer(positions, inv_freq)
 
-        # [1, 1, max_seq_len, D/2]
         self.register_buffer("cos", freqs.cos().unsqueeze(0).unsqueeze(0), persistent=False)
         self.register_buffer("sin", freqs.sin().unsqueeze(0).unsqueeze(0), persistent=False)
 

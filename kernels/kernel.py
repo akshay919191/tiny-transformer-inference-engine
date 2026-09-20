@@ -66,11 +66,6 @@ def _fresh_like(t: torch.Tensor) -> torch.Tensor:
     return torch.empty(t.shape, dtype=t.dtype, device=t.device)
 
 
-# ---------------------------------------------------------------------------
-# TopK
-#   Input  -> float32 (if not already)
-#   Output -> original dtype
-# ---------------------------------------------------------------------------
 @torch.library.custom_op("custom_cuda::topk", mutates_args=())
 def _topk_op(x: torch.Tensor, k: int) -> torch.Tensor:
     orig_dtype = x.dtype
@@ -83,14 +78,6 @@ def _topk_op(x: torch.Tensor, k: int) -> torch.Tensor:
 def _(x: torch.Tensor, k: int) -> torch.Tensor:
     return torch.empty(*x.shape[:-1], k, dtype=x.dtype, device=x.device)
 
-
-# ---------------------------------------------------------------------------
-# Softmax
-#   Input        -> float16
-#   Output       -> original dtype (the forward input's dtype)
-#   grad_output  -> float16
-#   Result       -> original dtype (the forward input's dtype, not grad's)
-# ---------------------------------------------------------------------------
 @torch.library.custom_op("custom_cuda::softmax_fwd", mutates_args=())
 def _softmax_fwd_op(x: torch.Tensor) -> torch.Tensor:
     return _first(softmax_cuda.forward(_fp16c(x))).to(x.dtype)
@@ -122,13 +109,6 @@ torch.library.register_autograd(
 )
 
 
-# ---------------------------------------------------------------------------
-# RMSNorm
-#   x, gamma -> float16
-#   Output   -> original dtype (x's)
-#   grad_output -> float16
-#   dx, dgamma  -> original dtype (x's, for BOTH outputs)
-# ---------------------------------------------------------------------------
 @torch.library.custom_op("custom_cuda::rmsnorm_fwd", mutates_args=())
 def _rmsnorm_fwd_op(x: torch.Tensor, gamma: torch.Tensor, eps: float) -> torch.Tensor:
     orig_shape = x.shape
@@ -148,8 +128,6 @@ def _rmsnorm_bwd_op(
     dx, dgamma = rmsnorm_cuda.backward(
         _fp16c(_to4d(grad)), _fp16c(_to4d(x)), _fp16c(gamma), eps
     )
-    # both outputs cast to x's original dtype (== ctx.orig_dtype in the
-    # autograd.Function version) -- dgamma does NOT use gamma.dtype
     return dx.reshape(orig_shape).to(x.dtype), dgamma.to(x.dtype)
 
 @_rmsnorm_bwd_op.register_fake
@@ -171,17 +149,6 @@ torch.library.register_autograd(
 )
 
 
-# ---------------------------------------------------------------------------
-# FlashAttn
-#   q, k, v      -> float16 (independently checked/cast)
-#   Output       -> original dtype (q's)
-#   grad_output  -> float16
-#   dq, dk, dv   -> original dtype (q's, for ALL THREE outputs)
-#
-#   q/k/v are almost always non-contiguous transposed views (.transpose(1,2)
-#   of a QKV projection) -- this is the op where the empty_like-inherits-
-#   strides bug actually bit (see _fresh_like docstring above).
-# ---------------------------------------------------------------------------
 @torch.library.custom_op("custom_cuda::flash_fwd", mutates_args=())
 def _flash_fwd_op(
     q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, causal: bool
@@ -204,8 +171,6 @@ def _flash_bwd_op(
     dq, dk, dv = flashattn.flash_bwd(
         _fp16c(q), _fp16c(k), _fp16c(v), _fp16c(out), _fp16c(grad), L, causal
     )
-    # all three cast to q's original dtype (== ctx.orig_dtype in the
-    # autograd.Function version) -- dk/dv do NOT use k.dtype/v.dtype
     return dq.to(q.dtype), dk.to(q.dtype), dv.to(q.dtype)
 
 @_flash_bwd_op.register_fake
@@ -229,18 +194,6 @@ torch.library.register_autograd(
 )
 
 
-# ---------------------------------------------------------------------------
-# Rope
-#   x           -> float16
-#   cos, sin    -> float32 (if not already)
-#   Output      -> original dtype (x's)
-#   grad_output -> float16
-#   dx          -> original dtype (x's; approximated via grad's dtype since
-#                  x itself isn't saved for backward -- see note below)
-#
-#   x is also almost always a non-contiguous transposed Q/K view here, same
-#   as FlashAttn -- fake must not inherit its strides.
-# ---------------------------------------------------------------------------
 @torch.library.custom_op("custom_cuda::rope_fwd", mutates_args=())
 def _rope_fwd_op(
     x: torch.Tensor, position_ids: Optional[torch.Tensor],
@@ -259,9 +212,7 @@ def _rope_bwd_op(
     cos: torch.Tensor, sin: torch.Tensor, rotary_dim: int, position_offset: int,
 ) -> torch.Tensor:
     dx = _first(rope_cuda.backward(_fp16c(grad), position_ids, _f32(cos), _f32(sin), rotary_dim, position_offset))
-    # NOTE: original x is not saved for backward, so we cast to grad's dtype.
-    # grad_output's dtype always matches the forward output's dtype (which was
-    # itself cast to x's original dtype), so this is equivalent in practice.
+    
     return dx.to(grad.dtype)
 
 @_rope_bwd_op.register_fake
