@@ -290,3 +290,99 @@ def test_first_decode(
             dim=-1,
         )
     )
+
+
+import argparse
+import contextlib
+import io
+
+
+def _sync():
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def _timed(fn, *args, **kwargs):
+    _sync()
+    t0 = time.perf_counter()
+    out = fn(*args, **kwargs)
+    _sync()
+    return out, (time.perf_counter() - t0) * 1e3
+
+
+def main():
+    from models.model_config import ModelConfig
+    from models.transformer_block import Transformer
+
+    p = argparse.ArgumentParser(description="KV-cache generation demo and correctness check")
+    p.add_argument("--ckpt", default="checkpoints/ckpt_final.pt")
+    p.add_argument("--device", default="cuda")
+    p.add_argument("--dtype", default="float16", choices=["float16", "bfloat16", "float32"])
+    p.add_argument("--batch", type=int, default=1)
+    p.add_argument("--prompt_len", type=int, default=32, help="random prompt length")
+    p.add_argument("--prompt_ids", default=None, help="comma-separated token ids (overrides random prompt)")
+    p.add_argument("--max_new_tokens", type=int, default=64)
+    p.add_argument("--attn_type", default=None, help="override checkpoint (mha / mqa)")
+    p.add_argument("--backend", default=None, help="override checkpoint (cuda / pytorch)")
+    p.add_argument("--warmup", type=int, default=1)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--skip_check", action="store_true", help="skip the cache vs no-cache check")
+    p.add_argument("--skip_nocache", action="store_true", help="skip the no-cache generation")
+    args = p.parse_args()
+
+    torch.manual_seed(args.seed)
+    device = args.device
+    dtype = getattr(torch, args.dtype)
+
+    ckpt = torch.load(args.ckpt, map_location=device)
+    cfg = ModelConfig()
+    for k, v in ckpt["model_config"].items():
+        setattr(cfg, k, v)
+
+    tcfg = ckpt.get("train_config", {})
+    attn_type = args.attn_type or tcfg.get("attn_type", "mqa")
+    backend = args.backend or tcfg.get("backend", "pytorch")
+
+    model = Transformer(cfg, attn_type=attn_type, backend=backend).to(device=device, dtype=dtype)
+    model.load_state_dict({k.replace("_orig_mod.", ""): v for k, v in ckpt["model"].items()})
+    model.eval()
+
+    if args.prompt_ids:
+        ids = [int(t) for t in args.prompt_ids.split(",")]
+        prompt = torch.tensor([ids] * args.batch, dtype=torch.long, device=device)
+    else:
+        prompt = torch.randint(0, cfg.vocab_size, (args.batch, args.prompt_len), device=device)
+
+    assert prompt.shape[1] + args.max_new_tokens <= cfg.max_seq_len, (
+        f"prompt ({prompt.shape[1]}) + new tokens ({args.max_new_tokens}) "
+        f"must fit in max_seq_len ({cfg.max_seq_len})"
+    )
+
+    n_params = sum(t.numel() for t in model.parameters())
+    print(f"model: {n_params / 1e6:.1f}M params | attn {attn_type} | backend {backend} | "
+          f"dtype {args.dtype} | batch {args.batch} | prompt {prompt.shape[1]} | "
+          f"new tokens {args.max_new_tokens}")
+
+    for _ in range(args.warmup):
+        with contextlib.redirect_stdout(io.StringIO()):
+            generate(model, prompt, 4, cfg, attn_type)
+
+    if not args.skip_check:
+        print("\n=== correctness: KV cache vs no cache ===")
+        test_first_decode(model, model, prompt, cfg, attn_type)
+
+    # ---- generation with KV cache ----
+    print("\n=== generate (KV cache) ===")
+    out_c, ms_c = _timed(generate, model, prompt, args.max_new_tokens, cfg, attn_type)
+    print(f"generated ids [seq 0]: {out_c[0, prompt.shape[1]:].tolist()}")
+
+    if not args.skip_nocache:
+        print("\n=== generate (no cache) ===")
+        out_n, ms_n = _timed(generate_nocache, model, prompt, args.max_new_tokens)
+        print(f"generated ids [seq 0]: {out_n[0, prompt.shape[1]:].tolist()}")
+        print(f"\nwall clock: cache {ms_c:.1f} ms | no cache {ms_n:.1f} ms | "
+              f"speedup x{ms_n / ms_c:.2f}")
+
+
+if __name__ == "__main__":
+    main()
