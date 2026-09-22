@@ -76,7 +76,7 @@ def build_parser():
 
 
 def get_batch(split, config, device):
-    data = np.memmap(f"data/{split}.bin", dtype=np.uint16, mode="r")
+    data = np.memmap(f"data/tinystories/{split}.bin", dtype=np.uint16, mode="r")
     ix = torch.randint(len(data) - config.max_seq_len - 1, (config.batch,))
     batch = torch.stack([
         torch.from_numpy(data[i : i + config.max_seq_len + 1].astype(np.int64))
@@ -136,7 +136,7 @@ def train(args):
 
         if step % args.eval_interval == 0:
             model.eval()
-            with torch.no_grad():
+            with torch.no_grad():   
                 val_ids = get_batch("val", run_time, device)
                 vx, vy = val_ids[:, :-1], val_ids[:, 1:]
                 val_logits = model(vx)
@@ -145,12 +145,12 @@ def train(args):
 
             print(f"step {step} | train loss {loss.item():.4f} | val loss {val_loss.item():.4f}")
 
-        if step % 1000 == 0:
+        if step % 10000 == 0:
             save_checkpoint(f"checkpoints/ckpt_step{step}.pt", model, optimizer, step, run_time, args)
 
     save_checkpoint("checkpoints/ckpt_final.pt", model, optimizer, args.max_steps, run_time, args)
 
 
+args = build_parser().parse_args()
 if __name__ == "__main__":
-    args = build_parser().parse_args()
     train(args)

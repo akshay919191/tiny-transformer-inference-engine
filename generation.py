@@ -97,7 +97,9 @@ def generate(model, run_time, device, prompt, max_new_tokens=100, temperature=0.
         ids = torch.cat([ids, next_id], dim=1)
         yield enc.decode([next_id.item()])
 
-
+"""
+don't use backend , causal , device and attn type as it will auto align with weights
+"""
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", default="checkpoints/ckpt_final.pt")
