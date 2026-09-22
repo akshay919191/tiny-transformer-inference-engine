@@ -226,6 +226,12 @@ tiny-transformer-inference/
 │   ├── test.py
 │   └── transformer_block.py
 │
+├── quantization_/
+│   ├── __init__.py
+│   ├── inference.py
+│   ├── quant_int8.py
+│   └── quant_weight.py
+│
 ├── tests/
 │   └── ...
 │
