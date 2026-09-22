@@ -161,7 +161,7 @@ python -m quantization_.inference \
 
 | Model size | Precision   | Size    | Compression |
 | ---------: | ----------- | ------: | -----------: |
-|      98M   | fp32        | —       | —            |
+|      98M   | fp32        | 390 mb       | 98 mb            |
 |      98M   | int8 (weight-only) | — | **3.97x** |
 
 Tested deliberately on a smaller model to keep quantization error visible and checkable before scaling up.
