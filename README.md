@@ -121,6 +121,51 @@ The CUDA backend was profiled during inference to identify the major GPU executi
 
 **Total profiled CUDA time:** 8.968 ms
 
+## Quantization (INT8)
+
+Weight-only INT8 quantization for inference. Weights are quantized once (offline) and stored as int8 + a scale; at inference time each weight is dequantized on the fly and used in a normal float matmul (or embedding lookup). This reduces checkpoint/VRAM size — it does not change the matmul precision.
+
+* `nn.Linear` weights (attention `q/k/v/o_proj`, MLP `up/gate/down_proj`) — quantized
+* `nn.Embedding` weight — quantized (row-gather via `F.embedding`, not a matmul)
+* Norms, softmax, RoPE, activations, KV cache — kept in float
+* Quantization granularity: per-channel (`QUANTIZE_PER = "channel"`)
+
+### Quantize a checkpoint
+
+```bash
+python -m quantization_.quant_weight
+```
+
+Reads `checkpoints/ckpt_20000.pt`, writes `checkpoints/ckpt_int8.pt` with quantized weights + `quant_metadata` (per-tensor scale, shape, module type).
+
+### Run inference on the quantized checkpoint
+
+```bash
+python -m quantization_.inference \
+    --ckpt checkpoints/ckpt_int8.pt \
+    --prompt "Once upon a time" \
+    --token 100
+```
+
+| Flag            | Default                     | Description           |
+| --------------- | ---------------------------- | --------------------- |
+| `--ckpt`        | `checkpoints/ckpt_int8.pt`   | Quantized checkpoint  |
+| `--prompt`      | `"Once upon a time"`         | Prompt text           |
+| `--temperature` | `1.0`                        | Sampling temperature  |
+| `--top_k`       | `0`                           | Top-k sampling         |
+| `--top_p`       | `1.0`                         | Top-p (nucleus) sampling |
+| `--token`       | `100`                         | Tokens to generate    |
+| `--device`      | `cuda`                        | Device                |
+
+### Compression
+
+| Model size | Precision   | Size    | Compression |
+| ---------: | ----------- | ------: | -----------: |
+|      98M   | fp32        | —       | —            |
+|      98M   | int8 (weight-only) | — | **3.97x** |
+
+Tested deliberately on a smaller model to keep quantization error visible and checkable before scaling up.
+
 The profiling results show that matrix multiplications are currently the largest GPU execution cost, followed by attention and RMSNorm.
 
 ## Project Structure
