@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 import tiktoken
 
-from models.transformer_block import Transformer
+from models.transformer_block import Transformer , make_kv_cache , make_kv_cache_
 from models.model_config import ModelConfig
 from sampling import sample
 from kv_cache import KVCache_kv
@@ -19,9 +19,10 @@ def str2bool(v):
 def load_model(ckpt_path, device, attn_type=None, backend=None, causal=None):
     ckpt = torch.load(ckpt_path, map_location=device)
 
-    run_time = ModelConfig()
-    for k, v in ckpt["model_config"].items():
-        setattr(run_time, k, v)
+    run_time = ModelConfig.from_checkpoint(ckpt_path)
+    # run_time = ModelConfig()
+    # for k, v in ckpt["model_config"].items():
+    #     setattr(run_time, k, v)
 
     train_cfg = ckpt.get("train_config", {})
 
@@ -86,6 +87,9 @@ def generate(model, run_time, device, prompt, max_new_tokens=100, temperature=0.
 
     logits = prefill(model, ids, kv_cache)
     next_id = sample(logits, temperature=temperature, top_k=top_k, top_p=top_p)
+    cache = make_kv_cache_(model, run_time, 1, run_time.max_seq_len, device)
+    prefill(model, ids, cache)
+    print(cache.length, ids.shape[1])     # these must be equal
 
     ids = torch.cat([ids, next_id], dim=1)
     yield enc.decode([next_id.item()])
@@ -102,7 +106,7 @@ don't use backend , causal , device and attn type as it will auto align with wei
 """
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--ckpt", default="checkpoints/ckpt_final.pt")
+    p.add_argument("--ckpt", default="checkpoints/ckpt_step20000.pt")
     p.add_argument("--prompt", default="Once upon a time")
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--top_k", type=int, default=0)

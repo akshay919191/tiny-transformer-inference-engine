@@ -1,8 +1,6 @@
-import torch
-import time
+import torch , time , argparse , sys
 import torch.nn as nn
 import torch.nn.functional as F
-import argparse
 
 from .attention import MHA, MHA_CACHED
 from .mqa import MQA, MQA_Cached
@@ -10,8 +8,10 @@ from .embedding import TokenEmbedding
 from .mlp import SwiGLU
 from .model_config import ModelConfig
 from .rmsnorm import RMSNorm
-import sys
 from pathlib import Path
+from serving.paged_mqa import MQA_Paged
+from kv_cache import KVCache_kv
+
 
 from kernels.kernel import (
     TopK,
@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from kv_cache import KVCache_kv
+
 
 
 def _build_attention(config, attn_type, backend, cached):
@@ -44,6 +44,7 @@ def _build_attention(config, attn_type, backend, cached):
         backend=backend,
         max_seq_len=config.max_seq_len,
     )
+
 
 
 class TransformerBlock_Nocache(nn.Module):
@@ -174,7 +175,7 @@ class Transformer(nn.Module):
             x = layer(x, kv_cache=kv_cache)
 
         if kv_cache is not None:
-            kv_cache.advance() ## as by default its already 1 , no need to write here
+            kv_cache.advance(input_ids.shape[1]) ## as by default its 1 , 
 
         x = self.final_norm(x)
         logits = self.lm_head(x)

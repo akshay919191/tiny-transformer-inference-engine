@@ -1,3 +1,7 @@
+"""
+LLM ARE USED FOR TEST GENERATIONS
+"""
+
 import os
 import argparse
 import torch
@@ -10,6 +14,7 @@ from kv_cache import KVCache_kv
 from kernels.capability import resolve_backend
 
 enc = tiktoken.get_encoding("gpt2")
+
 
 
 def str2bool(v):
@@ -68,7 +73,6 @@ def generate_greedy_golden(model, run_time, device, prompt_ids_list, max_new_tok
     head_dim = run_time.head_dim 
     model_dtype = next(model.parameters()).dtype
 
-    # FIX: Convert the shape structure into a tuple of primitive Python integers 
     batch_size = ids.shape[0]
 
     kv_cache = KVCache_kv(
@@ -105,13 +109,7 @@ if __name__ == "__main__":
     p.add_argument("--causal", type=str2bool, default=None)
     args = p.parse_args()
 
-    model, run_time = load_model(
-        args.ckpt,
-        args.device,
-        attn_type=args.attn_type,
-        backend=args.backend,
-        causal=args.causal,
-    )
+    model, run_time = load_model(args.ckpt, args.device, backend="pytorch")
 
     # Paste your own raw strings into these variables
     p1 = "One"
@@ -177,19 +175,24 @@ if __name__ == "__main__":
             "wind blew around them, knowing they would always look out for one another.")
 
     prompts_pool = [p1, p15, p16, p17, p100, p150, p200, p250, p350, p450]
+    
+    base_ids = enc.encode_ordinary(p450 + " " + p350)
+    assert len(base_ids) >= 400, f"base_ids too short: {len(base_ids)} tokens, need >= 400"
+
+    lengths = [1, 15, 16, 17, 31, 32, 33, 100, 200, 400]
+    prompts_ids = [base_ids[:n] for n in lengths]
+
     print(f"\nGenerating golden samples...")
     golden_data = []
 
-    for i, prompt in enumerate(prompts_pool):
-        prompt_ids_list = enc.encode_ordinary(prompt)
+    for i, prompt_ids_list in enumerate(prompts_ids):
         prompt_len = len(prompt_ids_list)
-        
+
         if prompt_len + 50 >= 512:
-            print(f"⚠️ Prompt {i+1} total tokens ({prompt_len + 50}) equals/exceeds 512! Skipping.")
             continue
-            
-        print(f"Processing Prompt {i+1}/{len(prompts_pool)} | Length: {prompt_len} tokens")
-        
+
+        print(f"Processing Prompt {i+1}/{len(prompts_ids)} | Length: {prompt_len} tokens")
+
         generated_ids = generate_greedy_golden(
             model=model,
             run_time=run_time,
@@ -197,7 +200,7 @@ if __name__ == "__main__":
             prompt_ids_list=prompt_ids_list,
             max_new_tokens=50
         )
-        
+
         golden_data.append({
             "prompt_ids": torch.tensor(prompt_ids_list, dtype=torch.long),
             "generated_ids": generated_ids
