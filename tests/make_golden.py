@@ -175,7 +175,7 @@ if __name__ == "__main__":
             "wind blew around them, knowing they would always look out for one another.")
 
     prompts_pool = [p1, p15, p16, p17, p100, p150, p200, p250, p350, p450]
-    
+
     base_ids = enc.encode_ordinary(p450 + " " + p350)
     assert len(base_ids) >= 400, f"base_ids too short: {len(base_ids)} tokens, need >= 400"
 
@@ -208,4 +208,4 @@ if __name__ == "__main__":
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     torch.save(golden_data, args.output)
-    print(f"\nSuccessfully stored {len(golden_data)} regression profiles to '{args.output}' ✅")
+    print(f"Successfully stored")
