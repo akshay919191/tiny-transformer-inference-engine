@@ -22,7 +22,6 @@ def kernel_supports(config, attn_type):
     if head_dim % 2 != 0:
         return False, f"head_dim={head_dim} is odd; RoPE kernel requires even head_dim"
 
-    # GQA/MQA: num_heads must be divisible by kv_heads
     kv_heads = getattr(config, "num_kv_heads", config.num_heads)
     if config.num_heads % kv_heads != 0:
         return False, (
@@ -30,12 +29,11 @@ def kernel_supports(config, attn_type):
             f"num_kv_heads={kv_heads} — invalid GQA/MQA grouping"
         )
 
-    # attn_type support — adjust as you actually implement/test each
     SUPPORTED_ATTN_TYPES = {"mqa", "mha"}
     if attn_type not in SUPPORTED_ATTN_TYPES:
         return False, f"attn_type={attn_type!r} not supported by the CUDA backend yet"
 
-    MAX_SUPPORTED_SEQ_LEN = 8192  # TODO: adjust to your kernel's actual limit
+    MAX_SUPPORTED_SEQ_LEN = 8192  
     if config.max_seq_len > MAX_SUPPORTED_SEQ_LEN:
         return False, (
             f"max_seq_len={config.max_seq_len} exceeds CUDA kernel limit "

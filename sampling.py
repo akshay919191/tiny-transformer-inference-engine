@@ -8,6 +8,11 @@ from kernels.kernel import TopK
 
 topk = TopK()
 
+def greedy(logits):
+    token_ids = torch.argmax(logits, dim=-1)
+    
+    return token_ids
+
 
 
 def smaple_temperature(

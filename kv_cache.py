@@ -27,7 +27,6 @@ class KVCache_kv(nn.Module):
         self.register_buffer("pos", torch.zeros((), dtype=torch.long, device=device), persistent=False)
         self.register_buffer("_slots", torch.arange(max_seq_len, device=device), persistent=False)
 
-        # Stable addresses so CUDA graphs can capture in-place writes.
         for t in (self.k, self.v, self.pos):
             torch._dynamo.mark_static_address(t)
 

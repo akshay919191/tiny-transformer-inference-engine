@@ -98,7 +98,7 @@ class MQA(nn.Module):
 
         if return_attn:
             return out, None
-        return out
+        return out  
 
 
 class MQA_Cached(nn.Module):
@@ -131,7 +131,7 @@ class MQA_Cached(nn.Module):
             self.register_buffer("cos_cache", cos.float().contiguous(), persistent=False)
             self.register_buffer("sin_cache", sin.float().contiguous(), persistent=False)
             self.rope = None
-        else:
+        else:   
             self.rope = RoPE(self.rotary_dim, config.max_seq_len)
             self.cos_cache = None
             self.sin_cache = None
