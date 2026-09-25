@@ -89,7 +89,6 @@ def generate(model, run_time, device, prompt, max_new_tokens=100, temperature=0.
     next_id = sample(logits, temperature=temperature, top_k=top_k, top_p=top_p)
     cache = make_kv_cache_(model, run_time, 1, run_time.max_seq_len, device)
     prefill(model, ids, cache)
-    print(cache.length, ids.shape[1])     # these must be equal
 
     ids = torch.cat([ids, next_id], dim=1)
     yield enc.decode([next_id.item()])
