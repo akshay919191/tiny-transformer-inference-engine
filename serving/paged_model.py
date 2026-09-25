@@ -44,7 +44,27 @@ class PagedTransformer(nn.Module):
         for layer in self.layers:
             x = layer(x, pool, block_table, start)
         x = x[:, -1:, :]                                   
-        return self.lm_head(self.final_norm(x))            
+        return self.lm_head(self.final_norm(x))
+        
+        
+    @torch.no_grad()
+    def forward_batch(self, batch, pool):
+        x = self.embedding(batch.input_ids.unsqueeze(0)).squeeze(0)   # [T, d_model]
+        for layer in self.layers:
+            residual = x
+            x = layer.attn_norm(x)
+            x = layer.attn.forward_paged_batched(
+                x, pool, layer.layer_idx, batch.positions, batch.query_start_loc, batch.block_tables
+            )
+            x = x + residual
+            residual = x
+            x = layer.mlp_norm(x)
+            x = layer.mlp(x)
+            x = x + residual
+
+        last_idx = torch.tensor([e - 1 for e in batch.query_start_loc[1:]], device=x.device)
+        x_last = x[last_idx]
+        return self.lm_head(self.final_norm(x_last))   # [S, vocab]        
 
 
 def load_paged_model(ckpt_path, device):
