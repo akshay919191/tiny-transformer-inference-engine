@@ -32,7 +32,7 @@ class BlockAllocator:
 
     def free(self, blocks: list[int]) -> None:
         seen = set()
-        for b in blocks:                                   # validate everything first
+        for b in blocks:                                   
             if not (0 < b < self.num_blocks):
                 raise ValueError(f"invalid block id {b}")
             if self._is_free[b] or b in seen:
