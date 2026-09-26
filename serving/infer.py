@@ -16,7 +16,6 @@ enc = tiktoken.get_encoding("gpt2")
 def generate_batched_text(model, cfg, prompts, max_new_tokens, eos_token_id,
                            pool, alloc, temperature=1.0, top_k=32, top_p=0.9,
                            block_size=16):
-    """Returns a list of full generated-token-id lists, one per prompt (EOS excluded)."""
     device = next(model.parameters()).device
     prompt_ids = [enc.encode_ordinary(p) for p in prompts]
     seqs = [Sequence(i, list(p), block_size) for i, p in enumerate(prompt_ids)]
