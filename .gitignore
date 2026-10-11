@@ -29,3 +29,7 @@ data/
 *.log
 wandb/
 runs/
+!checkpoints/
+!checkpoints/.gitkeep
+!data/
+!data/.gitkeep

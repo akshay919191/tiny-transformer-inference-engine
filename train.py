@@ -61,6 +61,9 @@ def build_parser():
     p = argparse.ArgumentParser(description="Train a small transformer")
 
     p.add_argument("--max_steps", type=int, default=5000)
+    p.add_argument("--batch_size", type=int, default=8)
+    p.add_argument("--compile", action="store_true",
+                   help="compile the model with torch.compile (slower startup, may improve throughput)")
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=0.1)
     p.add_argument("--device", type=str, default="cuda")
@@ -75,9 +78,20 @@ def build_parser():
     return p
 
 
-def get_batch(split, config, device):
-    data = np.memmap(f"data/tinystories/{split}.bin", dtype=np.uint16, mode="r")
-    ix = torch.randint(len(data) - config.max_seq_len - 1, (config.batch,))
+def get_batch(split, config, device, batch_size):
+    data_path = f"data/{split}.bin"
+    if not os.path.isfile(data_path):
+        raise FileNotFoundError(
+            f"Missing {data_path}. Download TinyStories and run `python tokenizer.py` first."
+        )
+    data = np.memmap(data_path, dtype=np.uint16, mode="r")
+    max_start = len(data) - config.max_seq_len
+    if max_start <= 0:
+        raise ValueError(
+            f"{data_path} contains {len(data)} tokens; need more than "
+            f"max_seq_len={config.max_seq_len}. Recheck the tokenized data."
+        )
+    ix = torch.randint(max_start, (batch_size,))
     batch = torch.stack([
         torch.from_numpy(data[i : i + config.max_seq_len + 1].astype(np.int64))
         for i in ix
@@ -98,6 +112,12 @@ def save_checkpoint(path, model, optimizer, step, model_config, train_args):
     print(f"Saved checkpoint: {path}")
 
 def train(args):
+    if args.max_steps <= 0:
+        raise ValueError("max_steps must be positive")
+    if args.batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if args.eval_interval <= 0:
+        raise ValueError("eval_interval must be positive")
     device = args.device
 
     run_time = ModelConfig(**{f.name: getattr(args, f.name) for f in fields(ModelConfig)})
@@ -106,7 +126,8 @@ def train(args):
     args.backend = resolved_backend
 
     model = Transformer(run_time, attn_type=args.attn_type, backend=resolved_backend).to(device)
-    model = torch.compile(model, mode="reduce-overhead")
+    if args.compile:
+        model = torch.compile(model, mode="reduce-overhead")
 
     for module in model.modules():
         if hasattr(module, "cos_cache") and module.cos_cache is not None:
@@ -124,7 +145,7 @@ def train(args):
     val_loss = None
 
     for step in range(args.max_steps):
-        input_ids = get_batch("train", run_time, device)
+        input_ids = get_batch("train", run_time, device, args.batch_size)
         x, y = input_ids[:, :-1], input_ids[:, 1:]
 
         logits = model(x)
@@ -137,7 +158,7 @@ def train(args):
         if step % args.eval_interval == 0:
             model.eval()
             with torch.no_grad():   
-                val_ids = get_batch("val", run_time, device)
+                val_ids = get_batch("val", run_time, device, args.batch_size)
                 vx, vy = val_ids[:, :-1], val_ids[:, 1:]
                 val_logits = model(vx)
                 val_loss = F.cross_entropy(val_logits.reshape(-1, val_logits.size(-1)), vy.reshape(-1))
@@ -151,6 +172,5 @@ def train(args):
     save_checkpoint("checkpoints/ckpt_final.pt", model, optimizer, args.max_steps, run_time, args)
 
 
-args = build_parser().parse_args()
 if __name__ == "__main__":
-    train(args)
+    train(build_parser().parse_args())
