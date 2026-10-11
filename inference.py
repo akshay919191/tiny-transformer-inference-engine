@@ -125,15 +125,14 @@ def generate_ids(model, cfg, prompt_ids, max_new_tokens, *, temperature=1.0,
                  top_k=0, top_p=1.0):
     if max_new_tokens < 0:
         raise ValueError("max_new_tokens must be >= 0")
+    if max_new_tokens == 0:
+        return []
     if not prompt_ids:
         raise ValueError("prompt must encode to at least one token")
     if len(prompt_ids) > cfg.max_seq_len:
         raise ValueError(f"prompt has {len(prompt_ids)} tokens; model limit is {cfg.max_seq_len}")
     if len(prompt_ids) + max_new_tokens > cfg.max_seq_len:
         raise ValueError("prompt plus requested generation exceeds max_seq_len")
-    if max_new_tokens == 0:
-        return []
-
     device = next(model.parameters()).device
     ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)
     cache = KVCache_kv(

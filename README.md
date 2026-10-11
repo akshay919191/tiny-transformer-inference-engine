@@ -76,6 +76,25 @@ python -m benchmarks.bench_inference --ckpt checkpoints/ckpt_final.pt \
 
 It reports median prefill latency, median decode latency per token, throughput, and peak CUDA allocation when applicable. Results depend on the model, backend, device, and settings; this repository does not claim a fixed speedup.
 
+### Local CPU measurement
+
+Measured in this workspace on an Intel Core i5-13450HX with `checkpoints/ckpt_final.pt` (`d_model=128`, 4 layers, 4 heads), PyTorch 2.7.1, 10 CPU threads, and no CUDA device. The run used batch 1, a 64-token prompt, 8 decode steps, 5 warmup runs, and 15 measured iterations:
+
+| Measurement | Result |
+| --- | ---: |
+| Prefill median | 4.727 ms (13,538 prompt tokens/s) |
+| Decode median | 1.690 ms/token (591.8 tokens/s) |
+
+Reproduce the measurement with:
+
+```bash
+python -m benchmarks.bench_inference --ckpt checkpoints/ckpt_final.pt \
+  --device cpu --backend pytorch --batch 1 --prompt-len 64 \
+  --decode-steps 8 --warmup 5 --iterations 15
+```
+
+These are results from this CPU and checkpoint only, not a general performance claim.
+
 ## Tests
 
 Run the focused tests for sampling, quantization, and generation input checks:
@@ -83,5 +102,7 @@ Run the focused tests for sampling, quantization, and generation input checks:
 ```bash
 pytest -q tests/test_sampling.py tests/test_quantization.py tests/test_inference.py
 ```
+
+In this workspace, `pytest` was not installed, so the pytest files were not run. Thirteen manual assertions covering sampling validation, quantization round trips, and generation stopping/context limits passed. An 8-token CPU generation smoke test also completed. CUDA was unavailable, so no GPU result is reported.
 
 See [`docs/architecture.md`](docs/architecture.md), [`docs/kv_cache.md`](docs/kv_cache.md), [`docs/inference.md`](docs/inference.md), and [`docs/benchmarking.md`](docs/benchmarking.md) for implementation details.

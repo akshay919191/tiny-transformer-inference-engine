@@ -10,4 +10,9 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            x32 = x.float()
+            weight = self.weight.float()
+            y = x32 * torch.rsqrt(x32.square().mean(dim=-1, keepdim=True) + self.eps)
+            return (y * weight).to(dtype=x.dtype)
         return RMSNormFunction.apply(x, self.weight, self.eps)

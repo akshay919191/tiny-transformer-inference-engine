@@ -1,6 +1,8 @@
 from contextlib import nullcontext
 
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.profiler import record_function
 
 from kernels.fused_swiglu import fused_swiglu
@@ -25,6 +27,6 @@ class SwiGLU(nn.Module):
         with _r("mlp_up_proj"):
             up = self.up_proj(x)
         with _r("mlp_silu_mul"):
-            h = fused_swiglu(gate, up)     
+            h = fused_swiglu(gate, up) if x.is_cuda else F.silu(gate) * up
         with _r("mlp_down_proj"):
             return self.down_proj(h)

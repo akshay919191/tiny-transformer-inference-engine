@@ -248,7 +248,7 @@ class MQA_Cached(nn.Module):
                     enable_gqa=(self.num_kv_heads != self.num_heads),
                 )
         else:
-            capturing = torch.cuda.is_current_stream_capturing()
+            capturing = kv_cache.k.is_cuda and torch.cuda.is_current_stream_capturing()
 
             # capture, where an int() sync would be illegal.
             start = None if capturing else int(kv_cache.length)
