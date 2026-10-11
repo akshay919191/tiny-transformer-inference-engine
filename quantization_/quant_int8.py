@@ -23,6 +23,13 @@ def quantize_(weights: torch.Tensor,
         pad: int, only meaningful for "group" (0 if in_features divided evenly).
              Needed by dequantize_ to crop the padding back off.
     """
+    if not isinstance(weights, torch.Tensor) or weights.ndim != 2:
+        raise ValueError("weights must be a 2D tensor")
+    if not weights.is_floating_point():
+        raise TypeError("weights must have a floating-point dtype")
+    if weights.numel() == 0 or not torch.isfinite(weights).all():
+        raise ValueError("weights must be non-empty and finite")
+
     if quantize_per_ == "tensor":
         max_abs = torch.clamp(weights.abs().max(), min=1e-8)
         scale = max_abs / QMAX
@@ -36,8 +43,8 @@ def quantize_(weights: torch.Tensor,
         return q, scale, 0
 
     elif quantize_per_ == "group":
-        if group_size is None:
-            raise ValueError("group_size is required when quantize_per_='group'")
+        if group_size is None or group_size <= 0:
+            raise ValueError("group_size must be positive when quantize_per_='group'")
 
         out_features, in_features = weights.shape
         pad = (-in_features) % group_size  # amount needed to reach a multiple of group_size
@@ -75,8 +82,8 @@ def dequantize_(q_weights: torch.Tensor,
         return q_weights.to(torch.float32) * scale 
 
     elif quantize_per_ == "group":
-        if group_size is None:
-            raise ValueError("group_size is required when quantize_per_='group'")
+        if group_size is None or group_size <= 0:
+            raise ValueError("group_size must be positive when quantize_per_='group'")
 
         out_features, padded_in = q_weights.shape
         n_groups = padded_in // group_size

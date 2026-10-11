@@ -1,133 +1,22 @@
-import argparse
-import torch
-import torch.nn.functional as F
+"""Compatibility helpers; use ``python inference.py`` for the command line."""
+
 import tiktoken
 
-from models.transformer_block import Transformer , make_kv_cache , make_kv_cache_
-from models.model_config import ModelConfig
-from sampling import sample
-from kv_cache import KVCache_kv
-from kernels.capability import resolve_backend
+from inference import generate_ids, load_model
 
-enc = tiktoken.get_encoding("gpt2")
+_tokenizer = tiktoken.get_encoding("gpt2")
 
 
-def str2bool(v):
-    return str(v).lower() in ("1", "true", "yes", "y")
+def generate(model, run_time, device, prompt, max_new_tokens=100,
+             temperature=0.9, top_k=20, top_p=1.0):
+    ids = _tokenizer.encode_ordinary(prompt)
+    output = generate_ids(model, run_time, ids, max_new_tokens,
+                          temperature=temperature, top_k=top_k, top_p=top_p)
+    previous = ""
+    for index in range(len(output)):
+        decoded = _tokenizer.decode(output[:index + 1])
+        yield decoded[len(previous):]
+        previous = decoded
 
 
-def load_model(ckpt_path, device, attn_type=None, backend=None, causal=None):
-    ckpt = torch.load(ckpt_path, map_location=device)
-
-    run_time = ModelConfig.from_checkpoint(ckpt_path)
-    # run_time = ModelConfig()
-    # for k, v in ckpt["model_config"].items():
-    #     setattr(run_time, k, v)
-
-    train_cfg = ckpt.get("train_config", {})
-
-    resolved_attn_type = attn_type if attn_type is not None else train_cfg.get("attn_type", "mqa")
-    requested_backend = backend if backend is not None else train_cfg.get("backend", "pytorch")
-
-    resolved_backend = resolve_backend(requested_backend, run_time, resolved_attn_type)
-
-    if causal is not None:
-        run_time.causal = causal
-
-    print(f"[DEBUG] Loading model with attn_type={resolved_attn_type}, backend={resolved_backend}, causal={run_time.causal}")
-
-    model = Transformer(run_time, attn_type=resolved_attn_type, backend=resolved_backend)
-    
-    state_dict = ckpt["model"]
-    unwrapped_state_dict = {
-        k.replace("_orig_mod.", ""): v for k, v in state_dict.items()
-    }
-    model.load_state_dict(unwrapped_state_dict)
-
-    if resolved_backend == "cuda":
-        model = model.to(device=device, dtype=torch.float16)
-    else:
-        model = model.to(device=device)
-
-    model.eval()
-    return model, run_time
-
-
-def prefill(model, tokens, kv_cache):
-    with torch.no_grad():
-        logits = model(tokens, kv_cache=kv_cache)  # [B, T, vocab]
-    return logits[:, -1, :]  # [B, vocab]
-
-
-def decode_one(model, next_token, kv_cache):
-    with torch.no_grad():
-        logits = model(next_token, kv_cache=kv_cache)  # [B, 1, vocab]
-    return logits[:, -1, :]  # [B, vocab]
-
-
-def generate(model, run_time, device, prompt, max_new_tokens=100, temperature=0.9, top_k=20, top_p=1.0):
-    ids = enc.encode_ordinary(prompt)
-    ids = torch.tensor(ids, dtype=torch.long, device=device).unsqueeze(0)
-
-    kv_heads = getattr(run_time, "num_kv_heads", run_time.num_heads)
-    head_dim = run_time.d_model // run_time.num_heads
-    
-    # match cache dtype to model parameters (Float16 or Float32)
-    model_dtype = next(model.parameters()).dtype
-
-    kv_cache = KVCache_kv(
-        num_layers=run_time.num_layers,
-        batch_size=ids.shape[0],
-        num_heads=kv_heads,
-        max_seq_len=run_time.max_seq_len,
-        head_dim=head_dim,
-        dtype=model_dtype,  # Pure zero-copy bypass
-        device=device,
-    )
-
-    logits = prefill(model, ids, kv_cache)
-    next_id = sample(logits, temperature=temperature, top_k=top_k, top_p=top_p)
-    cache = make_kv_cache_(model, run_time, 1, run_time.max_seq_len, device)
-    prefill(model, ids, cache)
-
-    ids = torch.cat([ids, next_id], dim=1)
-    yield enc.decode([next_id.item()])
-
-    for _ in range(max_new_tokens - 1):
-        logits = decode_one(model, next_id, kv_cache)
-        next_id = sample(logits, temperature=temperature, top_k=top_k, top_p=top_p)
-
-        ids = torch.cat([ids, next_id], dim=1)
-        yield enc.decode([next_id.item()])
-
-"""
-don't use backend , causal , device and attn type as it will auto align with weights
-"""
-if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("--ckpt", default="checkpoints/ckpt_step20000.pt")
-    p.add_argument("--prompt", default="Once upon a time")
-    p.add_argument("--temperature", type=float, default=1.0)
-    p.add_argument("--top_k", type=int, default=0)
-    p.add_argument("--top_p", type=float, default=1.0)
-    p.add_argument("--token", type=int, default=100)
-    p.add_argument("--device", type=str, default="cuda")
-    p.add_argument("--attn_type", type=str, default=None, choices=[None, "mqa", "mha"])
-    p.add_argument("--backend", type=str, default=None, choices=[None, "cuda", "pytorch", "auto"])
-    p.add_argument("--causal", type=str2bool, default=None)
-    args = p.parse_args()
-
-    model, run_time = load_model(
-        args.ckpt,
-        args.device,
-        attn_type=args.attn_type,
-        backend=args.backend,
-        causal=args.causal,
-    )
-
-    for piece in generate(
-        model, run_time, args.device, args.prompt,
-        args.token, args.temperature, args.top_k, args.top_p,
-    ):
-        print(piece, end="", flush=True)
-    print()
+__all__ = ["load_model", "generate", "generate_ids"]

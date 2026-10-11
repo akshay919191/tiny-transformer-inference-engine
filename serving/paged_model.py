@@ -68,8 +68,12 @@ class PagedTransformer(nn.Module):
 
 
 def load_paged_model(ckpt_path, device):
-    ckpt = torch.load(ckpt_path, map_location=device)
-    run_time = ModelConfig.from_checkpoint(ckpt_path)
+    from inference import _load_checkpoint, _model_config
+    ckpt = _load_checkpoint(ckpt_path)
+    run_time = _model_config(ckpt)
+    attn_type = ckpt.get("train_config", {}).get("attn_type", "mqa")
+    if attn_type != "mqa":
+        raise ValueError(f"paged serving supports MQA checkpoints, got {attn_type!r}")
     model = PagedTransformer(run_time, backend="pytorch")
     sd = {k.replace("_orig_mod.", ""): v for k, v in ckpt["model"].items()}
     model.load_state_dict(sd)          

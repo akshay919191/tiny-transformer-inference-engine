@@ -1,12 +1,6 @@
+import math
 import torch
-import time
-import torch.nn as nn
 import torch.nn.functional as F
-import argparse
-
-from kernels.kernel import TopK
-
-topk = TopK()
 
 def greedy(logits):
     return torch.argmax(logits, dim=-1, keepdim=True)   
@@ -88,12 +82,7 @@ def apply_top_k(logits, topk_digit):
         logits.shape[-1]
     )
 
-    result = topk(
-        logits.float().contiguous(),
-        K
-    )
-
-    top_values = result[0]
+    top_values = torch.topk(logits.float(), K, dim=-1).values
 
     kth = top_values[:, -1].unsqueeze(-1)
 
@@ -109,12 +98,18 @@ def sample(
     top_p=1.0,
 ):
 
-    if temperature <= 0:
-        raise ValueError(
-            "temperature must be > 0"
-        )
+    if logits.ndim != 2 or logits.shape[-1] == 0:
+        raise ValueError("logits must have shape [batch, vocab] with non-empty vocab")
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError("temperature must be finite and > 0")
+    if top_k < 0:
+        raise ValueError("top_k must be >= 0")
+    if not 0 < top_p <= 1:
+        raise ValueError("top_p must be in (0, 1]")
 
-
+    logits = logits.float()
+    if not torch.isfinite(logits).all():
+        raise ValueError("logits contain NaN or infinity")
     logits = logits / temperature
 
     if top_k > 0:
@@ -129,10 +124,9 @@ def sample(
             top_p,
         )
 
-    probs = F.softmax(
-        logits,
-        dim=-1,
-    )
+    probs = F.softmax(logits, dim=-1)
+    if not torch.isfinite(probs).all() or (probs.sum(dim=-1) <= 0).any():
+        raise ValueError("sampling produced an invalid probability distribution")
 
 
     next_token = torch.multinomial(

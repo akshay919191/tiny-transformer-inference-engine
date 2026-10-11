@@ -1,27 +1,6 @@
 # tiny-transformer-inference
 
-A GPT-style decoder-only transformer built from scratch in PyTorch, with optional Triton CUDA attention kernels.
-
-Trained on TinyStories using the GPT-2 tokenizer.
-
-## Architecture
-
-* Decoder-only transformer with RoPE, RMSNorm, and SwiGLU MLPs
-* Attention: MHA (multi-head) or MQA (multi-query, 1 shared KV head)
-* Two interchangeable backends:
-
-  * `pytorch` — reference implementation
-  * `cuda` — cpp extension kernels
-* KV cache + streaming generation
-
-| Config         |         Value |
-| -------------- | ------------: |
-| `vocab_size`   | 50257 (GPT-2) |
-| `d_model`      |           256 |
-| `num_layers`   |             8 |
-| `num_heads`    |             8 |
-| `num_kv_heads` |       1 (MQA) |
-| `max_seq_len`  |           512 |
+A GPT-style decoder-only transformer in PyTorch, trained on TinyStories with the GPT-2 tokenizer. It includes MHA/MQA attention, reference and CUDA backends, KV caching, weight-only INT8 checkpoints, and paged batched serving.
 
 ## Setup
 
@@ -29,220 +8,75 @@ Trained on TinyStories using the GPT-2 tokenizer.
 pip install -r requirements.txt
 ```
 
-## Data
+Training data is expected as tokenized `uint16` files at `data/train.bin` and `data/val.bin`.
 
-Tokenized TinyStories as `uint16` binaries, produced with `tiktoken` (GPT-2 encoding):
-
-```text
-data/
-├── train.bin
-└── val.bin
-```
-
-## Training
+## Train
 
 ```bash
 python train.py --max_steps 5000 --lr 3e-4 --backend cuda --attn_type mqa
 ```
 
-| Flag             | Default | Description                         |
-| ---------------- | ------- | ----------------------------------- |
-| `--max_steps`    | `5000`  | Training steps                      |
-| `--lr`           | `3e-4`  | Learning rate (AdamW)               |
-| `--weight_decay` | `0.1`   | Weight decay                        |
-| `--device`       | `cuda`  | Device                              |
-| `--backend`      | `cuda`  | `cuda` (cpp extension) or `pytorch` |
-| `--attn_type`    | `mqa`   | `mqa` or `mha`                      |
+Checkpoints include model configuration and training settings. Inference reads these settings by default and selects CPU automatically when CUDA is unavailable.
 
-Checkpoints are saved to `checkpoints/` and store both the model config and training flags, so inference reproduces the exact setup.
+## Inference
 
-## Generation
+All inference and quantization commands use `inference.py`.
 
 ```bash
-python generation.py \
-    --ckpt checkpoints/ckpt_final.pt \
-    --prompt "Once upon a time" \
-    --token 100
+python inference.py --ckpt checkpoints/ckpt_final.pt \
+    --prompt "Once upon a time" --tokens 100 --device auto
 ```
 
-| Flag            | Default                     | Description          |
-| --------------- | --------------------------- | -------------------- |
-| `--ckpt`        | `checkpoints/ckpt_final.pt` | Checkpoint path      |
-| `--prompt`      | `"Once upon a time"`        | Prompt text          |
-| `--temperature` | `1.0`                       | Sampling temperature |
-| `--token`       | `100`                       | Tokens to generate   |
-
-Tokens are printed to the terminal as they are generated (streaming).
-
-## Benchmarks
-
-Run the prefill and decode benchmark with both backends:
+Sampling controls:
 
 ```bash
-python -m benchmarks.bench_decode_prefill --batch 32 --compare
+python inference.py --ckpt checkpoints/ckpt_final.pt \
+    --prompt "A small story" --tokens 80 \
+    --temperature 0.8 --top-k 40 --top-p 0.95
 ```
 
-### Performance Summary
+`--tokens` must be nonnegative. The prompt and requested continuation must fit the checkpoint's `max_seq_len`; generation stops early on EOS. `--device` accepts `auto`, `cpu`, or `cuda`. Optional `--backend` and `--attn-type` override checkpoint training settings.
 
-**Model Profile:** 27.7M parameters | MQA Attention | `d_model` 256 | 8 Layers | Batch 32 | Prompt Length 100
+### INT8 weight quantization
 
-| Metric                    | `cuda` (cpp extension) Backend | `pytorch` Backend |         Improvement |
-| :------------------------ | -----------------------------: | ----------------: | ------------------: |
-| **Prefill Latency (p50)** |                  **12.143 ms** |         12.717 ms |    **~4.5% faster** |
-| **Prefill Throughput**    |            **263,535.2 tok/s** |   251,622.0 tok/s | **+11,913.2 tok/s** |
-| **Decode Latency (p50)**  |                   **0.577 ms** |          0.723 ms |   **~20.2% faster** |
-| **Decode Throughput**     |              **1,734.6 tok/s** |     1,382.3 tok/s |    **+352.3 tok/s** |
-| **Peak VRAM Memory**      |                     **708 MB** |            794 MB |    **Saving 86 MB** |
-
-### KV Cache Scaling
-
-The CUDA backend maintains nearly constant decode latency as the KV cache grows:
-
-| KV Cache Length | Decode Latency |
-| --------------: | -------------: |
-|             ~10 |       1.880 ms |
-|            ~490 |       1.923 ms |
-|           Ratio |      **1.02x** |
-
-This demonstrates that MQA + KV caching keeps decode performance relatively stable as the cached sequence grows.
-
-### CUDA Profiler
-
-The CUDA backend was profiled during inference to identify the major GPU execution costs.
-
-| Operation               |  CUDA Time | % of CUDA Time |
-| ----------------------- | ---------: | -------------: |
-| `aten::mm` / GEMM       |   4.386 ms |         48.90% |
-| PyTorch Flash Attention |   1.996 ms |         22.26% |
-| RMSNorm CUDA kernel     | 937.739 µs |         10.46% |
-| `aten::copy_`           | 395.489 µs |          4.41% |
-| RoPE CUDA kernel        | 324.585 µs |          3.62% |
-| `aten::add`             | 313.798 µs |          3.50% |
-
-**Total profiled CUDA time:** 8.968 ms
-
-## Quantization (INT8)
-
-Weight-only INT8 quantization for inference. Weights are quantized once (offline) and stored as int8 + a scale; at inference time each weight is dequantized on the fly and used in a normal float matmul (or embedding lookup). This reduces checkpoint/VRAM size — it does not change the matmul precision.
-
-* `nn.Linear` weights (attention `q/k/v/o_proj`, MLP `up/gate/down_proj`) — quantized
-* `nn.Embedding` weight — quantized (row-gather via `F.embedding`, not a matmul)
-* Norms, softmax, RoPE, activations, KV cache — kept in float
-* Quantization granularity: per-channel (`QUANTIZE_PER = "channel"`)
-
-### Quantize a checkpoint
+Quantize a standard checkpoint and then load the resulting file:
 
 ```bash
-python -m quantization_.quant_weight
+python inference.py --ckpt checkpoints/ckpt_final.pt \
+    --quantize checkpoints/ckpt_int8.pt --quant-mode channel
+python inference.py --ckpt checkpoints/ckpt_int8.pt --quantized \
+    --prompt "Once upon a time" --tokens 100
 ```
 
-Reads `checkpoints/ckpt_20000.pt`, writes `checkpoints/ckpt_int8.pt` with quantized weights + `quant_metadata` (per-tensor scale, shape, module type).
+`--quant-mode` accepts `tensor`, `channel` (default), or `group`; group mode also needs `--group-size N`. Weights are dequantized for ordinary floating point operations during inference, so this reduces stored weight size but does not provide integer matrix multiplication. KV cache and activations remain floating point.
 
-### Run inference on the quantized checkpoint
+### Paged batched serving
 
 ```bash
-python -m quantization_.inference \
-    --ckpt checkpoints/ckpt_int8.pt \
-    --prompt "Once upon a time" \
-    --token 100
+python inference.py --ckpt checkpoints/ckpt_final.pt --serving \
+    --prompts "Once upon a time" "A little dog" \
+    --tokens 80 --num-gpu-blocks 256 --block-size 16
 ```
 
-| Flag            | Default                     | Description           |
-| --------------- | ---------------------------- | --------------------- |
-| `--ckpt`        | `checkpoints/ckpt_int8.pt`   | Quantized checkpoint  |
-| `--prompt`      | `"Once upon a time"`         | Prompt text           |
-| `--temperature` | `1.0`                        | Sampling temperature  |
-| `--top_k`       | `0`                           | Top-k sampling         |
-| `--top_p`       | `1.0`                         | Top-p (nucleus) sampling |
-| `--token`       | `100`                         | Tokens to generate    |
-| `--device`      | `cuda`                        | Device                |
+Paged serving currently supports standard checkpoints. Adjust the GPU block count to fit available memory and the desired number/context length of active sequences.
 
-### Compression
+## Tests and benchmarks
 
-| Model size | Precision   | Size    | Compression |
-| ---------: | ----------- | ------: | -----------: |
-|      98M   | fp32        | 390 mb       |    **1x**         |
-|      98M   | int8 (weight-only) | 98 mb | **3.97x** |
+Run the repository's tests from the project root with `pytest`. Some integration tests use CUDA and checkpoint/golden artifacts; the focused sampling and inference safety tests run on CPU.
 
-Tested deliberately on a smaller model to keep quantization error visible and checkable before scaling up.
-
-The profiling results show that matrix multiplications are currently the largest GPU execution cost, followed by attention and RMSNorm.
-
-## Project Structure
-
-```text
-tiny-transformer-inference/
-
-│
-├── .vscode/
-│
-├── benchmarks/
-│   ├── __init__.py
-│   ├── benchmark_decode.py
-│   ├── benchmark_prefill.py
-│   ├── latency.py
-│   ├── memory.py
-│   └── throughput.py
-│
-├── checkpoints/
-│   ├── ckpt_final.pt
-│   ├── ckpt_step0.pt
-│   └── ckpt_step4500.pt
-│
-├── configs/
-│   ├── __init__.py
-│   └── benchmark_config.py
-│
-├── data/
-│   ├── TinyStories-train.txt
-│   ├── TinyStories-valid.txt
-│   ├── train.bin
-│   └── val.bin
-│
-├── docs/
-│   ├── __init__.py
-│   ├── architecture.md
-│   ├── benchmarking.md
-│   ├── inference.md
-│   └── kv_cache.md
-│
-├── kernels/
-│   ├── common/
-│   ├── cuda-kSAMPLING/
-│   ├── flashattn/
-│   ├── rmsnorm_kernel/
-│   ├── rope_kernel/
-│   └── kernel.py
-│
-├── models/
-│   ├── __init__.py
-│   ├── attention.py
-│   ├── embedding.py
-│   ├── mlp.py
-│   ├── model_config.py
-│   ├── mqa.py
-│   ├── rmsnorm.py
-│   ├── rope.py
-│   ├── test.py
-│   └── transformer_block.py
-│
-├── quantization_/
-│   ├── __init__.py
-│   ├── inference.py
-│   ├── quant_int8.py
-│   └── quant_weight.py
-│
-├── tests/
-│   └── ...
-│
-├── config.py
-├── generation.py
-├── kv_cache.py
-├── modeltest.py
-├── README.md
-├── requirements.txt
-├── sampling.py
-├── test_generator.py
-├── tokenizer.py
-└── train.py
+```bash
+pytest tests/test_sampling.py tests/test_quantization.py tests/test_inference.py
 ```
+
+Measure prefill and decode separately on a checkpoint:
+
+```bash
+python -m benchmarks.bench_inference --ckpt checkpoints/ckpt_final.pt \
+    --device auto --batch 1 --prompt-len 128 --decode-steps 32
+```
+
+The benchmark reports median prefill latency, median per-token decode latency, throughput, and CUDA peak allocation when applicable. Compare results only with the same model, backend, device, dtype, and settings. See [`docs/benchmarking.md`](docs/benchmarking.md) for correctness and measurement guidance.
+
+## Architecture and cache notes
+
+See [`docs/architecture.md`](docs/architecture.md), [`docs/kv_cache.md`](docs/kv_cache.md), and [`docs/inference.md`](docs/inference.md).
