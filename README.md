@@ -74,26 +74,33 @@ python -m benchmarks.bench_inference --ckpt checkpoints/ckpt_final.pt \
   --device auto --batch 1 --prompt-len 128 --decode-steps 32
 ```
 
-It reports median prefill latency, median decode latency per token, throughput, and peak CUDA allocation when applicable. Results depend on the model, backend, device, and settings; this repository does not claim a fixed speedup.
+It reports model-only TTFT, p50/p90 decode latency, prefill and decode throughput, end-to-end generation time, generated-token throughput, and peak CUDA allocation when applicable. TTFT and total time exclude tokenization and KV-cache allocation. Results depend on the model, backend, device, and settings; this repository does not claim a fixed speedup.
 
 ### Local CPU measurement
 
-Measured in this workspace on an Intel Core i5-13450HX with `checkpoints/ckpt_final.pt` (`d_model=128`, 4 layers, 4 heads), PyTorch 2.7.1, 10 CPU threads, and no CUDA device. The run used batch 1, a 64-token prompt, 8 decode steps, 5 warmup runs, and 15 measured iterations:
+These are CPU results; no GPU measurements were possible in this environment because `torch.cuda.is_available()` returned `False` and `nvidia-smi` could not connect to an NVIDIA driver. The measurements below were taken on an Intel Core i5-13450HX with `checkpoints/ckpt_final.pt` (`d_model=128`, 4 layers, 4 heads), PyTorch 2.7.1, and 10 CPU threads. The PyTorch backend was used with 3 warmup runs and 10 measured iterations per row. Each request generated 8 tokens.
 
-| Measurement | Result |
-| --- | ---: |
-| Prefill median | 4.727 ms (13,538 prompt tokens/s) |
-| Decode median | 1.690 ms/token (591.8 tokens/s) |
+| Batch | Prompt tokens | TTFT p50/p90 (ms) | Prefill tok/s | Decode p50/p90 (ms/token) | Decode tok/s | Total p50 (ms) | Generated tok/s |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 16 | 1.974 / 2.166 | 8,106.9 | 1.425 / 2.037 | 702.0 | 15.393 | 519.7 |
+| 1 | 64 | 4.934 / 5.149 | 12,970.3 | 1.667 / 2.485 | 599.9 | 18.834 | 424.8 |
+| 1 | 112 | 6.910 / 7.071 | 16,207.9 | 1.485 / 1.958 | 673.4 | 20.021 | 399.6 |
+| 2 | 16 | 2.920 / 3.318 | 10,957.6 | 1.585 / 2.263 | 631.0 | 17.333 | 923.1 |
+| 2 | 64 | 7.944 / 8.876 | 16,112.1 | 1.924 / 2.726 | 519.8 | 24.977 | 640.6 |
+| 2 | 112 | 12.266 / 12.657 | 18,261.9 | 2.048 / 4.611 | 488.3 | 32.152 | 497.6 |
+| 4 | 16 | 4.157 / 4.417 | 15,396.7 | 1.578 / 2.317 | 633.7 | 19.028 | 1,681.8 |
+| 4 | 64 | 13.253 / 13.292 | 19,316.8 | 1.936 / 5.085 | 516.6 | 32.253 | 992.2 |
+| 4 | 112 | 23.044 / 23.280 | 19,440.8 | 1.928 / 6.552 | 518.6 | 43.933 | 728.4 |
 
 Reproduce the measurement with:
 
 ```bash
 python -m benchmarks.bench_inference --ckpt checkpoints/ckpt_final.pt \
-  --device cpu --backend pytorch --batch 1 --prompt-len 64 \
-  --decode-steps 8 --warmup 5 --iterations 15
+  --device cpu --backend pytorch --sweep --batches 1 2 4 \
+  --prompt-lengths 16 64 112 --decode-steps 8 --warmup 3 --iterations 10
 ```
 
-These are results from this CPU and checkpoint only, not a general performance claim.
+TTFT measures the prefill forward pass and excludes tokenization and KV-cache allocation. These results describe this CPU and checkpoint only, not a general performance claim.
 
 ## Tests
 
