@@ -78,7 +78,7 @@ It reports model-only TTFT, p50/p90 decode latency, prefill and decode throughpu
 
 ### Local CPU measurement
 
-These are CPU results; no GPU measurements were possible in this environment because `torch.cuda.is_available()` returned `False` and `nvidia-smi` could not connect to an NVIDIA driver. The measurements below were taken on an Intel Core i5-13450HX with `checkpoints/ckpt_final.pt` (`d_model=128`, 4 layers, 4 heads), PyTorch 2.7.1, and 10 CPU threads. The PyTorch backend was used with 3 warmup runs and 10 measured iterations per row. Each request generated 8 tokens.
+These are CPU results measured on an Intel Core i5-13450HX with `checkpoints/ckpt_final.pt` (`d_model=128`, 4 layers, 4 heads), PyTorch 2.7.1, and 10 CPU threads. The PyTorch backend was used with 3 warmup runs and 10 measured iterations per row. Each request generated 8 tokens.
 
 | Batch | Prompt tokens | TTFT p50/p90 (ms) | Prefill tok/s | Decode p50/p90 (ms/token) | Decode tok/s | Total p50 (ms) | Generated tok/s |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
